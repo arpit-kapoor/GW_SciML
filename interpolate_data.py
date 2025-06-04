@@ -11,7 +11,7 @@ from tqdm import tqdm
 base_data_dir = '/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density/'
 # base_data_dir = '/Users/akap5486/FEFLOW/variable_density'
 raw_data_dir = os.path.join(base_data_dir, 'all')
-filtered_data_dir = os.path.join(base_data_dir, 'filtered')
+filtered_data_dir = os.path.join(base_data_dir, 'filter_all_ts')
 
 # %%
 # Get and sort time series files
