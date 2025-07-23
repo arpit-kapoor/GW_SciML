@@ -16,9 +16,9 @@ from torchsummary import summary
 
 
 sys.path.append('src')
-from data.dataset import GWDataset, Normalize
-from model.handler import ModelHandler
-from model.mlp import MLP
+from src.data.dataset import GWDataset, Normalize
+from src.model.handler import ModelHandler
+from src.model.mlp import MLP
 
 
 # In[3]:
@@ -102,6 +102,8 @@ opt = optim.Adam(mlp.parameters(), lr=1e-3, weight_decay=1e-3)
 
 # print model summary
 print(summary(mlp, (1, input_size)))
+
+mlp = mlp.double()
 
 
 
