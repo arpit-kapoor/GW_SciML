@@ -53,12 +53,20 @@ class FNOBlocks(nn.Module):
         super().__init__()
         self.n_layers = n_layers
         self.non_linearity = non_linearity
+        self.n_dim = len(n_modes)
 
         # Create skip connection layers (1x1 convs or linear layers)
-        self.fno_skips = nn.ModuleList([
-            nn.Conv2d(hidden_channels, hidden_channels, 1, bias=skip_fno_bias)
-            for _ in range(n_layers)
-        ])
+        self.fno_skips = nn.ModuleList(
+            [
+                getattr(nn, f"Conv{self.n_dim}d")(
+                    in_channels=hidden_channels,
+                    out_channels=hidden_channels,
+                    kernel_size=1,
+                    bias=skip_fno_bias,
+                )
+                for _ in range(n_layers)
+            ]
+        )
 
         # Create spectral convolution layers
         self.convs = nn.ModuleList([
