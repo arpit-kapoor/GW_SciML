@@ -151,8 +151,6 @@ class GWGridDataset(Dataset):
         self.X, self.y = self.create_sequences(self._data, 
                                                self.in_window_size, 
                                                self.out_window_size)
-        
-
 
     def _load_data(self):
         """
@@ -219,6 +217,4 @@ class GWGridDataset(Dataset):
             dict: A dictionary containing the data sample.
         """
         return self.X[idx], self.y[idx]
-        
-    
 
