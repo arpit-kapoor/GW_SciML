@@ -14,12 +14,9 @@ from torch.utils.data import DataLoader
 
 
 # In[2]:
-
-
-sys.path.append('src')
-from data.dataset import GWDataset, Normalize
-from model.handler import ModelHandler
-from model.mlp import MLP
+from src.data import GWDataset, Normalize
+from src.models.handler import ModelHandler
+from src.models.mlp import MLP
 
 
 # In[3]:

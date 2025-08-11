@@ -9,16 +9,16 @@ import torch
 import torch.optim as optim
 
 from torch.utils.data import DataLoader
-from torchsummary import summary
+from torchinfo import summary
 
 
 # In[2]:
 
 
 sys.path.append('src')
-from src.data.dataset import GWDataset, Normalize
-from src.model.handler import ModelHandler
-from src.model.mlp import MLP
+from src.data import GWDataset, Normalize
+from src.models.handler import ModelHandler
+from src.models.mlp import MLP
 
 
 # In[3]:

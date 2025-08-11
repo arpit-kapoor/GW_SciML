@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from src.model.neuralop.gno import GNOBlock
+from src.models.neuralop.gno import GNOBlock
 
 def test_gno_block_forward():
     # Create a regular grid y of shape (40, 40, 40, 3)

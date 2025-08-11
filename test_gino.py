@@ -17,7 +17,7 @@ from pathlib import Path
 # Add src to path for imports
 sys.path.append('src')
 
-from src.model.neuralop.gino import GINO
+from src.models.neuralop.gino import GINO
 
 
 def test_gino_basic():

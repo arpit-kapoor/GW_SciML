@@ -13,10 +13,10 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 # Import custom modules
-from src.data.dataset import GWDataset, GWGridDataset, Normalize
-from src.model.handler import ModelHandler
-from src.model.neuralop.fno import FNO
-from src.model.neuralop.losses import LpLoss, H1Loss
+from src.data import GWGridDataset, Normalize
+from src.models.handler import ModelHandler
+from src.models.neuralop.fno import FNO
+from src.models.neuralop.losses import LpLoss, H1Loss
 
 # Argument parser
 parser = argparse.ArgumentParser(description='Train FNO model for groundwater flow')
