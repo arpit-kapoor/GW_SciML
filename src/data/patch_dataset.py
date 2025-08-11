@@ -19,7 +19,8 @@ class GWPatchDataset(Dataset):
         obs_transform=None,
         val_ratio=0.3,
         input_window_size=10,
-        output_window_size=10
+        output_window_size=10,
+        target_cols_idx=None
     ):
         """
         Initialize the GWPatchDataset.
@@ -43,7 +44,8 @@ class GWPatchDataset(Dataset):
         patch_data = self.load_patch_data(
             data_path,
             val_ratio=val_ratio,
-            dataset=dataset
+            dataset=dataset,
+            target_cols_idx=target_cols_idx
         )
 
         # Create input/output sequences from patch data
@@ -106,7 +108,8 @@ class GWPatchDataset(Dataset):
         self,
         data_path,
         val_ratio=0.3,
-        dataset='train'
+        dataset='train',
+        target_cols_idx=None
     ):
         """
         Load patch data from the data directory.
@@ -131,6 +134,11 @@ class GWPatchDataset(Dataset):
             core_obs = np.load(os.path.join(patch_dir_path, 'core_obs.npy'))
             ghost_coords = np.load(os.path.join(patch_dir_path, 'ghost_coords.npy'))
             ghost_obs = np.load(os.path.join(patch_dir_path, 'ghost_obs.npy'))
+
+            # Select target columns
+            if target_cols_idx is not None:
+                core_obs = core_obs[..., target_cols_idx]
+                ghost_obs = ghost_obs[..., target_cols_idx]
 
             # Determine split index for train/val
             train_idx = int(len(core_obs) * (1 - val_ratio))

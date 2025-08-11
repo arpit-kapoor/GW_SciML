@@ -13,7 +13,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 # Import custom modules
-from src.data import GWGridDataset, Normalize
+from src.data.grid_dataset import GWGridDataset
+from src.data.transform import Normalize
 from src.models.handler import ModelHandler
 from src.models.neuralop.fno import FNO
 from src.models.neuralop.losses import LpLoss, H1Loss

@@ -16,7 +16,8 @@ from torchinfo import summary
 
 
 sys.path.append('src')
-from src.data import GWDataset, Normalize
+from src.data.points_dataset import GWDataset
+from src.data.transform import Normalize
 from src.models.handler import ModelHandler
 from src.models.mlp import MLP
 
