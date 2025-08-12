@@ -3,6 +3,7 @@ import os
 
 import pandas as pd
 import torch
+import datetime as dt
 from tqdm import tqdm
 
 from src.data.transform import Normalize
@@ -209,10 +210,10 @@ def train_on_batch(model, train_patch_ds, batch_indices, loss_fn, optimizer, arg
 
         # Evaluate loss on core points
         core_len = len(patch_data['core_coords'])
-        core_output = model_output[:core_len]
-        core_target = output_obs[:core_len].to(args.device)
+        core_output = model_output[:, :core_len]
+        core_target = output_obs[:, :core_len].to(args.device)
         core_loss = loss_fn(core_output, core_target)
-        print(f"Sample {sample_idx} Core loss: {core_loss.item()}")
+        # print(f"Sample {sample_idx} Core loss: {core_loss.item():.4f}")
         batch_loss += core_loss
     
     # Backward pass
@@ -255,6 +256,7 @@ def evaluate_model_on_patches(val_patch_ds, model, loss_fn, args):
             core_len = len(patch_data['core_coords'])
             core_output = model_output[:core_len]
             core_target = output_obs[:core_len].to(args.device)
+            
             core_loss = loss_fn(core_output, core_target)
             val_loss += core_loss.item()
 
@@ -272,7 +274,7 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, args):
 
     for epoch in range(args.epochs):
         
-        print(f"Epoch {epoch+1} of {args.epochs}")
+        print(f"TS: {dt.datetime.now()} Training Epoch {epoch+1} of {args.epochs}")
 
         # Randomly ordered index for patch dataset
         indices = torch.randperm(len(train_patch_ds))
@@ -284,11 +286,11 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, args):
 
             # Train on batch
             batch_loss = train_on_batch(model, train_patch_ds, batch_indices, loss_fn, optimizer, args)
-            print(f"Epoch {epoch+1} of {args.epochs}, Batch at {batch_idx//args.batch_size}/{len(indices)//args.batch_size} loss: {batch_loss}")
+            print(f"TS: {dt.datetime.now()} Batch: {batch_idx//args.batch_size+1}/{len(indices)//args.batch_size+1} Loss: {batch_loss:.4f}")
 
         # Evaluate model on validation set
         val_loss = evaluate_model_on_patches(val_patch_ds, model, args)
-        print(f"Epoch {epoch+1} of {args.epochs}, Validation loss: {val_loss}")
+        print(f"TS: {dt.datetime.now()} Validation Loss: {val_loss:.4f}")
         
     return model
         

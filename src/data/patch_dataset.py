@@ -87,7 +87,7 @@ class GWPatchDataset(Dataset):
             ghost_obs = patch['ghost_obs']
 
             # Generate sequences for this patch
-            for i in range(0, len(core_obs) - input_window_size, output_window_size):
+            for i in range(0, len(core_obs) - (input_window_size + output_window_size) + 1):
                 coords.append({
                     'patch_id': patch['patch_id'],
                     'core_coords': patch['core_coords'],
