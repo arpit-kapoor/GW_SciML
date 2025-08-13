@@ -274,7 +274,7 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, args):
 
     for epoch in range(args.epochs):
         
-        print(f"TS: {dt.datetime.now()} Training Epoch {epoch+1} of {args.epochs}")
+        print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) Training Epoch {epoch+1} of {args.epochs}")
 
         # Randomly ordered index for patch dataset
         indices = torch.randperm(len(train_patch_ds))
@@ -286,11 +286,11 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, args):
 
             # Train on batch
             batch_loss = train_on_batch(model, train_patch_ds, batch_indices, loss_fn, optimizer, args)
-            print(f"TS: {dt.datetime.now()} Batch: {batch_idx//args.batch_size+1}/{len(indices)//args.batch_size+1} Loss: {batch_loss:.4f}")
+            print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) Batch: {batch_idx//args.batch_size+1}/{len(indices)//args.batch_size+1} Loss: {batch_loss:.4f}")
 
         # Evaluate model on validation set
-        val_loss = evaluate_model_on_patches(val_patch_ds, model, args)
-        print(f"TS: {dt.datetime.now()} Validation Loss: {val_loss:.4f}")
+        val_loss = evaluate_model_on_patches(val_patch_ds, model, loss_fn, args)
+        print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) Validation Loss: {val_loss:.4f}")
         
     return model
         
