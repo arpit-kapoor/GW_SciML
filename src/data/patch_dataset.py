@@ -20,7 +20,7 @@ class GWPatchDataset(Dataset):
         val_ratio=0.3,
         input_window_size=10,
         output_window_size=10,
-        target_cols_idx=None
+        target_col_idx=None
     ):
         """
         Initialize the GWPatchDataset.
@@ -33,6 +33,7 @@ class GWPatchDataset(Dataset):
             val_ratio (float): Ratio of data to use for validation.
             input_window_size (int): Number of time steps in each input sequence.
             output_window_size (int): Number of time steps in each output sequence.
+            target_col_idx (int, optional): Index of the target column to extract from observations.
         """
         self.data_path = data_path
         self.dataset = dataset
@@ -45,7 +46,7 @@ class GWPatchDataset(Dataset):
             data_path,
             val_ratio=val_ratio,
             dataset=dataset,
-            target_cols_idx=target_cols_idx
+            target_col_idx=target_col_idx
         )
 
         # Create input/output sequences from patch data
@@ -94,12 +95,12 @@ class GWPatchDataset(Dataset):
                     'ghost_coords': patch['ghost_coords']
                 })
                 input_sequence.append({
-                    'core_in': core_obs[i:i + input_window_size],
-                    'ghost_in': ghost_obs[i:i + input_window_size]
+                    'core_in': core_obs[i:i + input_window_size].T,
+                    'ghost_in': ghost_obs[i:i + input_window_size].T
                 })
                 output_sequence.append({
-                    'core_out': core_obs[i + input_window_size:i + input_window_size + output_window_size],
-                    'ghost_out': ghost_obs[i + input_window_size:i + input_window_size + output_window_size]
+                    'core_out': core_obs[i + input_window_size:i + input_window_size + output_window_size].T,
+                    'ghost_out': ghost_obs[i + input_window_size:i + input_window_size + output_window_size].T
                 })
 
         return coords, input_sequence, output_sequence
@@ -109,7 +110,7 @@ class GWPatchDataset(Dataset):
         data_path,
         val_ratio=0.3,
         dataset='train',
-        target_cols_idx=None
+        target_col_idx=None
     ):
         """
         Load patch data from the data directory.
@@ -118,6 +119,7 @@ class GWPatchDataset(Dataset):
             data_path (str): Path to the data directory.
             val_ratio (float): Validation ratio.
             dataset (str): Dataset type, either 'train' or 'val'.
+            target_col_idx (int, optional): Index of the target column to extract from observations.
 
         Returns:
             list: List of patch data dictionaries, each containing patch_id, core/ghost coords and obs.
@@ -135,11 +137,6 @@ class GWPatchDataset(Dataset):
             ghost_coords = np.load(os.path.join(patch_dir_path, 'ghost_coords.npy'))
             ghost_obs = np.load(os.path.join(patch_dir_path, 'ghost_obs.npy'))
 
-            # Select target columns
-            if target_cols_idx is not None:
-                core_obs = core_obs[..., target_cols_idx]
-                ghost_obs = ghost_obs[..., target_cols_idx]
-
             # Determine split index for train/val
             train_idx = int(len(core_obs) * (1 - val_ratio))
 
@@ -153,6 +150,11 @@ class GWPatchDataset(Dataset):
             if self.obs_transform is not None:
                 core_obs = self.obs_transform(core_obs)
                 ghost_obs = self.obs_transform(ghost_obs)
+            
+            # Select target column
+            if target_col_idx is not None:
+                core_obs = core_obs[..., target_col_idx]
+                ghost_obs = ghost_obs[..., target_col_idx]
 
             if dataset == 'train':
                 patch_data.append({
