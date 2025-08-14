@@ -146,16 +146,16 @@ def define_model_parameters(args):
     args.in_gno_out_channels = args.input_window_size
     
     # MLP layer dimensions for input GNO channel processing
-    args.in_gno_channel_mlp_layers = [64, 128, 32]
+    args.in_gno_channel_mlp_layers = [32, 64, 32]
     
     # FNO (Fourier Neural Operator) configuration
     args.fno_n_layers = 4
     args.fno_n_modes = (8, 8, 8)  # 3D Fourier modes
-    args.fno_hidden_channels = 128
+    args.fno_hidden_channels = 64
     args.lifting_channels = 64
     
     # Output GNO configuration
-    args.out_gno_channel_mlp_layers = [64, 128, 32]
+    args.out_gno_channel_mlp_layers = [32, 64, 32]
     args.projection_channel_ratio = 2
     
     # Predict the full output window per point
