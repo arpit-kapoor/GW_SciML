@@ -58,6 +58,9 @@ class GWPatchDataset(Dataset):
 
         # Store processed data
         self.coords, self.input_sequence, self.output_sequence = patch_data
+        
+        # Cache patch_ids for fast access (optimization for PatchBatchSampler)
+        self._patch_ids_cache = None
 
     def create_sequence_data(
         self,
@@ -199,3 +202,19 @@ class GWPatchDataset(Dataset):
         data_dict.update(self.output_sequence[idx])
         data_dict.update(self.coords[idx])
         return data_dict
+    
+    def get_all_patch_ids(self):
+        """
+        Optimized method to get all patch_ids at once for PatchBatchSampler.
+        
+        This method caches the result to avoid repeated computation.
+        
+        Returns:
+            np.ndarray: Array of patch_ids for all samples in the dataset.
+        """
+        if self._patch_ids_cache is None:
+            print("Building patch_ids cache...")
+            self._patch_ids_cache = np.array([coord['patch_id'] for coord in self.coords], dtype=np.int32)
+            print(f"Cached {len(self._patch_ids_cache)} patch_ids")
+        
+        return self._patch_ids_cache

@@ -11,4 +11,4 @@
 cd $PBS_O_WORKDIR/..
 
 # Run the Python script
-/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python train_gino_on_patches.py --epochs 10 --batch-size 64 --base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density/ --patch-data-subdir filter_patch --input-window-size 5 --output-window-size 5 --target-col head
+/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python train_gino_on_patches.py --epochs 100 --batch-size 150 --base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density/ --patch-data-subdir filter_patch --input-window-size 5 --output-window-size 5 --target-col head
