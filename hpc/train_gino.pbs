@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N GINO
 #PBS -l select=1:ncpus=4:mem=46gb:ngpus=1
-#PBS -l walltime=12:00:00
+#PBS -l walltime=24:00:00
 #PBS -m abe
 #PBS -j oe
 #PBS -o /srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs/train_gino.log
@@ -10,5 +10,58 @@
 # Change to the directory from which the job was submitted
 cd $PBS_O_WORKDIR/..
 
-# Run the Python script
-/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python train_gino_on_patches.py --epochs 100 --batch-size 150 --base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density/ --patch-data-subdir filter_patch --input-window-size 5 --output-window-size 5 --target-col head
+# Set up variables
+RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO"
+PYTHON_ENV="/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python"
+BASE_DATA_DIR="/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density/"
+
+# Training parameters
+EPOCHS=100
+BATCH_SIZE=166
+CHECKPOINT_EVERY=5
+INPUT_WINDOW=5
+OUTPUT_WINDOW=5
+TARGET_COL="head"
+
+# Check for existing latest checkpoint to resume from
+LATEST_CHECKPOINT=""
+if [ -d "$RESULTS_BASE_DIR" ]; then
+    # Find the most recent results directory
+    LATEST_RESULTS_DIR=$(find "$RESULTS_BASE_DIR" -maxdepth 1 -type d -name "gino_*" | sort | tail -1)
+    
+    if [ -n "$LATEST_RESULTS_DIR" ] && [ -f "$LATEST_RESULTS_DIR/checkpoints/latest_checkpoint.pth" ]; then
+        LATEST_CHECKPOINT="$LATEST_RESULTS_DIR/checkpoints/latest_checkpoint.pth"
+        echo "Found existing checkpoint: $LATEST_CHECKPOINT"
+        echo "Resuming training from checkpoint..."
+    else
+        echo "No existing checkpoint found. Starting new training..."
+    fi
+else
+    echo "No existing results directory found. Starting new training..."
+fi
+
+# Build the training command
+TRAIN_CMD="$PYTHON_ENV train_gino_on_patches.py \
+    --epochs $EPOCHS \
+    --batch-size $BATCH_SIZE \
+    --base-data-dir $BASE_DATA_DIR \
+    --patch-data-subdir filter_patch \
+    --input-window-size $INPUT_WINDOW \
+    --output-window-size $OUTPUT_WINDOW \
+    --target-col $TARGET_COL \
+    --save-checkpoint-every $CHECKPOINT_EVERY"
+
+# Add resume parameter if checkpoint exists
+if [ -n "$LATEST_CHECKPOINT" ]; then
+    TRAIN_CMD="$TRAIN_CMD --resume-from $LATEST_CHECKPOINT"
+fi
+
+# Log the command being executed
+echo "Executing command:"
+echo "$TRAIN_CMD"
+echo "Starting time: $(date)"
+
+# Run the training script
+eval $TRAIN_CMD
+
+echo "Training completed at: $(date)"

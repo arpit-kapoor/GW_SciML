@@ -7,6 +7,7 @@ This script:
 - Collates a batch into a single point cloud (core+ghost) and batches sequences
 - Generates a per-batch latent grid over the point cloud bounding box
 - Trains GINO with batched forward/backward passes
+- Supports resuming training from saved checkpoints
 
 Tensor shapes (per batch):
 - point_coords: [N_points, 3]
@@ -16,6 +17,12 @@ Tensor shapes (per batch):
 - outputs: [B, N_points, output_window_size]
 
 Loss is computed only on core points to avoid boundary artifacts from ghost points.
+
+Resume Training:
+- Use --resume-from path/to/checkpoint.pth to resume from a specific checkpoint
+- Checkpoints are automatically saved every N epochs (configurable with --save-checkpoint-every)
+- Training state (model, optimizer, scheduler, losses) is fully restored
+- Results directory is inferred from checkpoint path when resuming
 """
 
 import argparse
@@ -24,6 +31,7 @@ import os
 import pandas as pd
 import torch
 import datetime as dt
+import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
 from src.data.transform import Normalize
@@ -88,6 +96,14 @@ def setup_arguments():
     parser.add_argument('--no-shuffle-patches', dest='shuffle_patches', action='store_false',
                        help='Disable shuffling patch order between epochs')
     
+    # Resume training parameters
+    parser.add_argument('--resume-from', type=str, default=None,
+                       help='Path to checkpoint file to resume training from')
+    parser.add_argument('--checkpoint-dir', type=str, default=None,
+                       help='Directory to save checkpoints (defaults to results_dir/checkpoints)')
+    parser.add_argument('--save-checkpoint-every', type=int, default=5,
+                       help='Save checkpoint every N epochs')
+    
     # Other parameters (placeholder for future use)
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use for training (cuda, cpu, or auto)')
@@ -100,10 +116,26 @@ def setup_arguments():
     args.raw_data_dir = os.path.join(args.base_data_dir, args.raw_data_subdir)
     args.patch_data_dir = os.path.join(args.base_data_dir, args.patch_data_subdir)
 
-    # Create results directory with timestamp
-    timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
-    args.results_dir = os.path.join(args.results_dir, f'gino_{timestamp}')
-    os.makedirs(args.results_dir, exist_ok=True)
+    # Create results directory with timestamp (unless resuming)
+    if args.resume_from is None:
+        timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
+        args.results_dir = os.path.join(args.results_dir, f'gino_{timestamp}')
+        os.makedirs(args.results_dir, exist_ok=True)
+    else:
+        # When resuming, extract results_dir from checkpoint path
+        checkpoint_path = os.path.abspath(args.resume_from)
+        if 'checkpoints' in checkpoint_path:
+            # If checkpoint is in a checkpoints subdirectory, go up one level
+            args.results_dir = os.path.dirname(os.path.dirname(checkpoint_path))
+        else:
+            # Otherwise use the directory containing the checkpoint
+            args.results_dir = os.path.dirname(checkpoint_path)
+        print(f"Resuming training, using existing results directory: {args.results_dir}")
+    
+    # Set up checkpoint directory
+    if args.checkpoint_dir is None:
+        args.checkpoint_dir = os.path.join(args.results_dir, 'checkpoints')
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
 
     # Define model parameters
     args = define_model_parameters(args)
@@ -468,6 +500,8 @@ def evaluate_model_on_patches(val_loader, model, loss_fn, args):
 
             # Compute loss on core points only
             loss = loss_fn(core_output, core_target)
+            
+            # Dynamically infer batch size for loss computation
             batch_size = x.shape[0]
             total_loss += loss.item() * batch_size
             total_samples += batch_size
@@ -476,16 +510,161 @@ def evaluate_model_on_patches(val_loader, model, loss_fn, args):
     return total_loss / max(total_samples, 1)
 
 
-def train_gino_on_patches(train_patch_ds, val_patch_ds, model, args):
+def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses, args, filename=None):
+    """Save a training checkpoint to enable resuming training.
+    
+    Args:
+        model: GINO model to save
+        optimizer: Optimizer state to save
+        scheduler: Learning rate scheduler state to save
+        epoch: Current epoch number (0-indexed)
+        train_losses: List of training losses up to current epoch
+        val_losses: List of validation losses up to current epoch
+        args: Argument namespace containing checkpoint directory
+        filename: Optional custom filename for checkpoint
+    """
+    if filename is None:
+        filename = f'checkpoint_epoch_{epoch:04d}.pth'
+    
+    checkpoint_path = os.path.join(args.checkpoint_dir, filename)
+    
+    # Save all training state
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'train_losses': train_losses,
+        'val_losses': val_losses,
+        'args': args,  # Save training configuration for compatibility checking
+    }
+    
+    torch.save(checkpoint, checkpoint_path)
+    print(f"Checkpoint saved: {checkpoint_path}")
+    
+    # Also save as latest checkpoint for easy resuming
+    latest_path = os.path.join(args.checkpoint_dir, 'latest_checkpoint.pth')
+    torch.save(checkpoint, latest_path)
+    print(f"Latest checkpoint saved: {latest_path}")
+
+
+def load_checkpoint(checkpoint_path, model, optimizer, scheduler, args):
+    """Load a training checkpoint to resume training.
+    
+    Args:
+        checkpoint_path: Path to checkpoint file
+        model: GINO model to load state into
+        optimizer: Optimizer to load state into  
+        scheduler: Learning rate scheduler to load state into
+        args: Current argument namespace for compatibility checking
+        
+    Returns:
+        tuple: (start_epoch, train_losses, val_losses)
+    """
+    print(f"Loading checkpoint from: {checkpoint_path}")
+    
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location=args.device)
+    
+    # Validate compatibility
+    saved_args = checkpoint['args']
+    _validate_checkpoint_compatibility(saved_args, args)
+    
+    # Load model state
+    model.load_state_dict(checkpoint['model_state_dict'])
+    print("Model state loaded successfully")
+    
+    # Load optimizer state
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    print("Optimizer state loaded successfully")
+    
+    # Load scheduler state
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    print("Scheduler state loaded successfully")
+    
+    # Get training progress
+    start_epoch = checkpoint['epoch'] + 1  # Resume from next epoch
+    train_losses = checkpoint.get('train_losses', [])
+    val_losses = checkpoint.get('val_losses', [])
+    
+    print(f"Resuming training from epoch {start_epoch}")
+    print(f"Loaded {len(train_losses)} training losses and {len(val_losses)} validation losses")
+    
+    return start_epoch, train_losses, val_losses
+
+
+def _validate_checkpoint_compatibility(saved_args, current_args):
+    """Validate that checkpoint is compatible with current training setup.
+    
+    Args:
+        saved_args: Arguments from saved checkpoint
+        current_args: Current training arguments
+        
+    Raises:
+        ValueError: If incompatible configuration detected
+    """
+    # Check critical model parameters
+    critical_params = [
+        'coord_dim', 'gno_radius', 'in_gno_out_channels', 'fno_n_layers', 
+        'fno_n_modes', 'fno_hidden_channels', 'out_channels', 'latent_query_dims',
+        'input_window_size', 'output_window_size', 'target_col_idx'
+    ]
+    
+    for param in critical_params:
+        if hasattr(saved_args, param) and hasattr(current_args, param):
+            saved_val = getattr(saved_args, param)
+            current_val = getattr(current_args, param)
+            if saved_val != current_val:
+                raise ValueError(f"Incompatible {param}: saved={saved_val}, current={current_val}")
+    
+    print("Checkpoint compatibility validated successfully")
+
+
+def plot_training_curves(train_losses, val_losses, args):
+    """Plot training and validation loss curves and save to results directory.
+    
+    Args:
+        train_losses: List of training losses per epoch
+        val_losses: List of validation losses per epoch
+        args: Argument namespace containing results directory
+    """
+    plt.figure(figsize=(10, 6))
+    epochs = range(1, len(train_losses) + 1)
+    
+    plt.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2, marker='o')
+    plt.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2, marker='s')
+    
+    plt.title('Training and Validation Loss Over Epochs', fontsize=14, fontweight='bold')
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Loss', fontsize=12)
+    plt.legend(fontsize=12)
+    plt.grid(True, alpha=0.3)
+    
+    # Add some styling
+    plt.tight_layout()
+    
+    # Save plot to results directory
+    plot_path = os.path.join(args.results_dir, 'training_curves.png')
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Training curves saved to '{plot_path}'")
+
+
+def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, scheduler, args):
     """Train GINO with true batch training using DataLoader and PatchBatchSampler.
 
     Each training step uses multiple sequences from the same patch to share the
     same point cloud and latent grid, improving neighbor search and cache reuse.
     
+    Supports resuming training from checkpoints.
+    
     Args:
         train_patch_ds: Training dataset
         val_patch_ds: Validation dataset
         model: GINO model to train
+        optimizer: Optimizer for training
+        scheduler: Learning rate scheduler
         args: Argument namespace with training hyperparameters
         
     Returns:
@@ -520,22 +699,31 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, args):
     print(f"Train loader length: {len(train_loader)}")
     print(f"Val loader length: {len(val_loader)}")
 
-    # Define optimizer and loss (relative L2 over time channels)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-    
-    # Add exponential learning rate decay scheduler
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_gamma)
-    
     # Use relative L2 loss with appropriate dimensionality
     loss_fn = LpLoss(d=1, p=2, reduce_dims=[0, 1], reductions='mean')
 
+    # Initialize training state
+    start_epoch = 0
+    train_losses = []
+    val_losses = []
+    
+    # Load checkpoint if resuming training
+    if args.resume_from is not None:
+        start_epoch, train_losses, val_losses = load_checkpoint(
+            args.resume_from, model, optimizer, scheduler, args
+        )
+
     # Training loop
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) Training Epoch {epoch+1} of {args.epochs}")
         print(f"Current learning rate: {scheduler.get_last_lr()[0]:.6f}")
 
         # Log shuffling configuration for this epoch
         print(f"Epoch {epoch+1} shuffling: within_batches={args.shuffle_within_batches}, patches={args.shuffle_patches}")
+
+        # Track training loss for this epoch
+        epoch_train_loss = 0.0
+        epoch_train_samples = 0
 
         # Training step loop
         for step_idx, batch in enumerate(train_loader, start=1):
@@ -545,7 +733,7 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, args):
             x = batch['x'].to(args.device).float()
             y = batch['y'].to(args.device).float()
             
-            # Extract batch dimensions for logging
+            # Dynamically infer batch size for this batch
             batch_size = x.shape[0]
             n_points = x.shape[1]
 
@@ -566,6 +754,10 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, args):
             # Compute loss on core points only
             loss = loss_fn(core_output, core_target)
 
+            # Accumulate training loss weighted by batch size
+            epoch_train_loss += loss.item() * batch_size
+            epoch_train_samples += batch_size
+
             # Backward pass and optimization step
             optimizer.zero_grad()
             loss.backward()
@@ -574,14 +766,30 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, args):
             # Log training progress
             print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) Step: {step_idx}/{len(train_loader)} Batch Size: {batch_size} N Points: {n_points} Loss: {loss.item():.4f}")
 
+        # Calculate average training loss for this epoch
+        avg_train_loss = epoch_train_loss / max(epoch_train_samples, 1)
+        train_losses.append(avg_train_loss)
+
         # Evaluate model on validation set after each epoch
         val_loss = evaluate_model_on_patches(val_loader, model, loss_fn, args)
-        print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) Validation Loss: {val_loss:.4f}")
+        val_losses.append(val_loss)
+        
+        print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) Epoch {epoch+1} - Training Loss: {avg_train_loss:.4f}, Validation Loss: {val_loss:.4f}")
+        
+        # Save checkpoint periodically
+        if (epoch + 1) % args.save_checkpoint_every == 0:
+            save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses, args)
         
         # Step the learning rate scheduler only at the specified interval
         if (epoch + 1) % args.lr_scheduler_interval == 0:
             scheduler.step()
             print(f"Learning rate updated to: {scheduler.get_last_lr()[0]:.6f}")
+
+    # Save final checkpoint
+    save_checkpoint(model, optimizer, scheduler, args.epochs - 1, train_losses, val_losses, args, 'final_checkpoint.pth')
+    
+    # Plot and save training curves
+    plot_training_curves(train_losses, val_losses, args)
 
     return model
         
@@ -628,8 +836,12 @@ if __name__ == "__main__":
     model = define_ginos_model(args)
     print(f"Model: {model}")
     
+    # Define optimizer and learning rate scheduler
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_gamma)
+    
     # Train the model on patch data
-    model = train_gino_on_patches(train_patch_ds, val_patch_ds, model, args)
+    model = train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, scheduler, args)
 
     # Save trained model state dict to results directory
     model_path = os.path.join(args.results_dir, 'gino_model.pth')

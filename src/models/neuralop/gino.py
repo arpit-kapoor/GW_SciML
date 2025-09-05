@@ -140,9 +140,6 @@ class GINO(nn.Module):
             use_open3d_neighbor_search=use_open3d_neighbor_search,
             use_torch_scatter_reduce=False
         )
-        
-        # Store reference to out_gno for forward pass
-        self.gno_out = self.out_gno
 
         self.projection_channel_ratio = projection_channel_ratio
         self.projection_channels = projection_channel_ratio * fno_hidden_channels
@@ -240,7 +237,7 @@ class GINO(nn.Module):
             for key, out_p in output_queries.items():
                 out_p = out_p.squeeze(0)
 
-                sub_output = self.gno_out(y=latent_queries.reshape((-1, latent_queries.shape[-1])), 
+                sub_output = self.out_gno(y=latent_queries.reshape((-1, latent_queries.shape[-1])), 
                     x=out_p,
                     f_y=latent_embed,)
                 sub_output = sub_output.permute(0, 2, 1)
@@ -254,7 +251,7 @@ class GINO(nn.Module):
             output_queries = output_queries.squeeze(0)
 
             # latent queries is of shape (d_1 x d_2 x... d_n x n), reshape to n_out x n
-            out = self.gno_out(y=latent_queries.reshape((-1, latent_queries.shape[-1])), 
+            out = self.out_gno(y=latent_queries.reshape((-1, latent_queries.shape[-1])), 
                         x=output_queries,
                         f_y=latent_embed,)
             out = out.permute(0, 2, 1)

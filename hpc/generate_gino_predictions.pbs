@@ -1,0 +1,37 @@
+#!/bin/bash
+#PBS -N GINO_predictions
+#PBS -l select=1:ncpus=4:mem=46gb:ngpus=1
+#PBS -l walltime=02:00:00
+#PBS -m abe
+#PBS -j oe
+#PBS -o /srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs/gino_predictions.log
+
+
+# Change to the directory from which the job was submitted
+cd $PBS_O_WORKDIR/..
+
+# Path to the trained GINO model (update this to your actual model path)
+# MODEL_PATH="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/gino_model.pth"
+MODEL_PATH="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO/gino_20250815_221345/gino_model.pth"
+
+# Base data directory (update if different)
+BASE_DATA_DIR="/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density"
+
+# Results directory for predictions
+RESULTS_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions"
+
+echo "Running prediction script..."
+
+# Run the prediction script
+/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python generate_gino_predictions.py \
+    --model-path "$MODEL_PATH" \
+    --base-data-dir "$BASE_DATA_DIR" \
+    --results-dir "$RESULTS_DIR" \
+    --target-col "mass_concentration" \
+    --input-window-size 5 \
+    --output-window-size 5 \
+    --batch-size 150 \
+    --device auto
+
+echo "Prediction generation completed!"
+echo "Results saved to: $RESULTS_DIR"
