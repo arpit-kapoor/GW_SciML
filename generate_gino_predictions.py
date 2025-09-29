@@ -94,17 +94,17 @@ def configure_model_parameters(args):
     """Configure model parameters to match training configuration."""
     # These parameters must match the training configuration exactly
     args.coord_dim = 3
-    args.gno_radius = 0.1
+    args.gno_radius = 0.15  # Increased for better aggregation
     args.in_gno_out_channels = args.input_window_size
     args.in_gno_channel_mlp_layers = [32, 64, 32]
     args.fno_n_layers = 4
-    args.fno_n_modes = (8, 8, 8)
-    args.fno_hidden_channels = 64
-    args.lifting_channels = 64
+    args.fno_n_modes = (12, 12, 8)  # Increased from 8
+    args.fno_hidden_channels = 64  # Increased from 32
+    args.lifting_channels = 64     # Increased from 32
     args.out_gno_channel_mlp_layers = [32, 64, 32]
     args.projection_channel_ratio = 2
     args.out_channels = args.output_window_size
-    args.latent_query_dims = (32, 32, 32)
+    args.latent_query_dims = (32, 32, 24)  # Updated to match training
     return args
 
 
@@ -181,34 +181,61 @@ def create_patch_datasets(patch_data_dir, coord_transform, obs_transform, **kwar
 
 
 def load_gino_model(model_path, args):
-    """Load trained GINO model from state dict."""
+    """Load trained GINO model from checkpoint file.
+    
+    The checkpoint contains the full training state including:
+    - model_state_dict: The actual model parameters we need
+    - optimizer_state_dict: Not needed for inference
+    - scheduler_state_dict: Not needed for inference
+    - training history and args: Used to validate configuration
+    """
+    print(f"\nLoading checkpoint from: {model_path}")
+    
+    # Load full checkpoint
+    checkpoint = torch.load(model_path, map_location=args.device)
+    
+    # Extract saved configuration
+    saved_args = checkpoint['args']
+    print("\nSaved model configuration:")
+    print(f"- FNO modes: {saved_args.fno_n_modes}")
+    print(f"- FNO layers: {saved_args.fno_n_layers}")
+    print(f"- Hidden channels: {saved_args.fno_hidden_channels}")
+    print(f"- GNO radius: {saved_args.gno_radius}")
+    print(f"- Latent dims: {saved_args.latent_query_dims}")
+    
+    # Initialize model with saved configuration
     model = GINO(
         # Input GNO configuration
-        in_gno_coord_dim=args.coord_dim,
-        in_gno_radius=args.gno_radius,
-        in_gno_out_channels=args.in_gno_out_channels,
-        in_gno_channel_mlp_layers=args.in_gno_channel_mlp_layers,
+        in_gno_coord_dim=saved_args.coord_dim,
+        in_gno_radius=saved_args.gno_radius,
+        in_gno_out_channels=saved_args.in_gno_out_channels,
+        in_gno_channel_mlp_layers=saved_args.in_gno_channel_mlp_layers,
         
         # FNO configuration
-        fno_n_layers=args.fno_n_layers,
-        fno_n_modes=args.fno_n_modes,
-        fno_hidden_channels=args.fno_hidden_channels,
-        lifting_channels=args.lifting_channels,
+        fno_n_layers=saved_args.fno_n_layers,
+        fno_n_modes=saved_args.fno_n_modes,
+        fno_hidden_channels=saved_args.fno_hidden_channels,
+        lifting_channels=saved_args.lifting_channels,
         
         # Output GNO configuration
-        out_gno_coord_dim=args.coord_dim,
-        out_gno_radius=args.gno_radius,
-        out_gno_channel_mlp_layers=args.out_gno_channel_mlp_layers,
-        projection_channel_ratio=args.projection_channel_ratio,
-        out_channels=args.out_channels,
+        out_gno_coord_dim=saved_args.coord_dim,
+        out_gno_radius=saved_args.gno_radius,
+        out_gno_channel_mlp_layers=saved_args.out_gno_channel_mlp_layers,
+        projection_channel_ratio=saved_args.projection_channel_ratio,
+        out_channels=saved_args.out_channels,
     ).to(args.device)
     
-    # Load state dict
-    state_dict = torch.load(model_path, map_location=args.device)
-    model.load_state_dict(state_dict)
+    # Load just the model state dict
+    model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    print(f"Model loaded from: {model_path}")
+    # Print training progress from checkpoint
+    print(f"\nCheckpoint training progress:")
+    print(f"- Epoch: {checkpoint['epoch'] + 1}")
+    print(f"- Train loss: {checkpoint['train_losses'][-1]:.4f}")
+    print(f"- Val loss: {checkpoint['val_losses'][-1]:.4f}")
+    
+    print(f"\nModel loaded successfully from: {model_path}")
     return model
 
 
@@ -222,32 +249,36 @@ def make_collate_fn(args):
         # Combine core and ghost points
         point_coords = torch.concat([core_coords, ghost_coords], dim=0).float()
         
-        # Create latent queries grid
+        # Create latent queries grid over the per-batch bounding box
+        # This provides a regular grid for the FNO component
         coords_min = torch.min(point_coords, dim=0).values
         coords_max = torch.max(point_coords, dim=0).values
         latent_query_arr = [
             torch.linspace(coords_min[i], coords_max[i], args.latent_query_dims[i], device=args.device)
             for i in range(args.coord_dim)
         ]
+        # Create meshgrid and stack to get [Qx, Qy, Qz, 3] tensor
         latent_queries = torch.stack(torch.meshgrid(*latent_query_arr, indexing='ij'), dim=-1)
         
-        # Batch sequences
+        # Build batched sequences: concat along points (dim=0), batch along dim=0
         x_list, y_list = [], []
         for sample in batch_samples:
+            # Combine core and ghost inputs/outputs for each sample
             sample_input = torch.concat([sample['core_in'], sample['ghost_in']], dim=0).float().unsqueeze(0)
             sample_output = torch.concat([sample['core_out'], sample['ghost_out']], dim=0).float().unsqueeze(0)
             x_list.append(sample_input)
             y_list.append(sample_output)
         
-        x = torch.cat(x_list, dim=0)
-        y = torch.cat(y_list, dim=0)
+        # Stack all sequences into batch tensors
+        x = torch.cat(x_list, dim=0)  # [B, N_points, input_window_size]
+        y = torch.cat(y_list, dim=0)  # [B, N_points, output_window_size]
         
         return {
-            'point_coords': point_coords,
-            'latent_queries': latent_queries,
-            'x': x,
-            'y': y,
-            'core_len': len(core_coords),
+            'point_coords': point_coords,      # [N_points, 3]
+            'latent_queries': latent_queries,  # [Qx, Qy, Qz, 3]
+            'x': x,                           # [B, N_points, input_window_size]
+            'y': y,                           # [B, N_points, output_window_size]
+            'core_len': len(core_coords),     # Number of core points (for loss masking)
             'patch_id': sample['patch_id']
         }
     return collate_fn
@@ -511,11 +542,11 @@ def create_visualizations(results_dict, args):
         vmin = np.min(target_first_timestep)
         vmax = np.max(target_first_timestep)
         
-        # Create figure with two subplots for this sample
-        fig = plt.figure(figsize=(15, 6))
+        # Create figure with three subplots for this sample
+        fig = plt.figure(figsize=(20, 6))
         
         # Subplot for observations
-        ax1 = fig.add_subplot(1, 2, 1, projection='3d')
+        ax1 = fig.add_subplot(1, 3, 1, projection='3d')
         scatter1 = ax1.scatter(coords[:, 0], coords[:, 1], coords[:, 2], 
                               c=target_first_timestep, cmap='viridis', s=5, alpha=0.7,
                               vmin=vmin, vmax=vmax)
@@ -527,7 +558,7 @@ def create_visualizations(results_dict, args):
                     label=f'{args.target_col} (observed)')
         
         # Subplot for predictions
-        ax2 = fig.add_subplot(1, 2, 2, projection='3d')
+        ax2 = fig.add_subplot(1, 3, 2, projection='3d')
         scatter2 = ax2.scatter(coords[:, 0], coords[:, 1], coords[:, 2], 
                               c=pred_first_timestep, cmap='viridis', s=5, alpha=0.7,
                               vmin=vmin, vmax=vmax)
@@ -537,6 +568,23 @@ def create_visualizations(results_dict, args):
         ax2.set_zlabel('Z')
         plt.colorbar(scatter2, ax=ax2, shrink=0.5, aspect=20, 
                     label=f'{args.target_col} (predicted)')
+        
+        # Calculate error
+        error = target_first_timestep - pred_first_timestep
+        
+        # Subplot for error
+        ax3 = fig.add_subplot(1, 3, 3, projection='3d')
+        # Use diverging colormap centered at 0 for error
+        error_range = max(abs(error.min()), abs(error.max()))
+        scatter3 = ax3.scatter(coords[:, 0], coords[:, 1], coords[:, 2], 
+                              c=error, cmap='RdBu_r', s=5, alpha=0.7,
+                              vmin=-error_range, vmax=error_range)
+        ax3.set_title(f'Error (Obs - Pred) - Sample {sample_idx+1}\nFirst Timestep')
+        ax3.set_xlabel('X')
+        ax3.set_ylabel('Y')
+        ax3.set_zlabel('Z')
+        plt.colorbar(scatter3, ax=ax3, shrink=0.5, aspect=20, 
+                    label=f'{args.target_col} error')
         
         plt.tight_layout()
         

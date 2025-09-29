@@ -6,6 +6,7 @@ A robust, high-performance training framework for Graph-Informed Neural Operator
 
 ### ✅ **Advanced Training Capabilities**
 - **Resume Training**: Automatic checkpoint saving and resuming from interruptions
+- **Continuous Training Curves**: Accumulated loss history across all resume sessions
 - **Optimized Batch Sampling**: 2-10x faster training with memory-efficient patch batching
 - **HPC Ready**: Fault-tolerant PBS scripts for long-running cluster jobs
 - **True Batch Training**: Efficient multi-sequence batching from same spatial domains
@@ -116,6 +117,14 @@ checkpoint = {
     'val_losses': validation_loss_history,
     'args': training_configuration
 }
+
+# Separate persistent loss history (JSON)
+loss_history = {
+    'train_losses': accumulated_across_all_sessions,
+    'val_losses': accumulated_across_all_sessions,
+    'total_epochs': total_epochs_trained,
+    'last_updated': timestamp
+}
 ```
 
 ### Resume Validation
@@ -123,6 +132,12 @@ checkpoint = {
 - Model architecture validation
 - Data parameter verification
 - Clear error messages for mismatches
+
+### Continuous Training Curves
+- **Persistent Loss History**: Separate JSON file maintains complete loss history
+- **Accumulated Plotting**: Training curves show progress across all resume sessions
+- **Resume Indicators**: Visual markers show where training was resumed
+- **Session Statistics**: Summary of total epochs, minimum losses, and training timeline
 
 ## 🖥️ HPC Workflow
 

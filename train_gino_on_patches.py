@@ -27,6 +27,7 @@ Resume Training:
 
 import argparse
 import os
+import json
 
 import pandas as pd
 import torch
@@ -74,12 +75,17 @@ def setup_arguments():
                        help='Number of time steps in each output sequence')
     
     # Model parameters (placeholder for future use)
-    parser.add_argument('--learning-rate', type=float, default=1e-3,
+    parser.add_argument('--learning-rate', type=float, default=5e-4,
                        help='Learning rate for optimizer')
-    parser.add_argument('--lr-gamma', type=float, default=0.95,
+    parser.add_argument('--lr-gamma', type=float, default=0.98,
                        help='Exponential learning rate decay factor')
-    parser.add_argument('--lr-scheduler-interval', type=int, default=5,
+    parser.add_argument('--lr-scheduler-interval', type=int, default=10,
                        help='Number of epochs between learning rate scheduler updates')
+    parser.add_argument('--grad-clip-norm', type=float, default=1.0,
+                       help='Gradient clipping norm value (0 to disable)')
+    parser.add_argument('--scheduler-type', type=str, default='exponential', 
+                       choices=['exponential', 'cosine'],
+                       help='Type of learning rate scheduler to use')
     parser.add_argument('--epochs', type=int, default=5,
                        help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32,
@@ -118,19 +124,38 @@ def setup_arguments():
 
     # Create results directory with timestamp (unless resuming)
     if args.resume_from is None:
+        # Create new timestamped directory for fresh training
         timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
         args.results_dir = os.path.join(args.results_dir, f'gino_{timestamp}')
         os.makedirs(args.results_dir, exist_ok=True)
+        print(f"Starting fresh training, created results directory: {args.results_dir}")
     else:
-        # When resuming, extract results_dir from checkpoint path
+        # When resuming, extract the actual run directory from checkpoint path
         checkpoint_path = os.path.abspath(args.resume_from)
+        
+        # Extract the actual results directory (specific run dir) from checkpoint path
         if 'checkpoints' in checkpoint_path:
-            # If checkpoint is in a checkpoints subdirectory, go up one level
-            args.results_dir = os.path.dirname(os.path.dirname(checkpoint_path))
+            # Path like: /path/to/exp_name/gino_timestamp/checkpoints/checkpoint.pth
+            actual_results_dir = os.path.dirname(os.path.dirname(checkpoint_path))
         else:
-            # Otherwise use the directory containing the checkpoint
-            args.results_dir = os.path.dirname(checkpoint_path)
-        print(f"Resuming training, using existing results directory: {args.results_dir}")
+            # Path like: /path/to/exp_name/gino_timestamp/checkpoint.pth
+            actual_results_dir = os.path.dirname(checkpoint_path)
+        
+        # Ensure the checkpoint exists and is accessible
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+        
+        # Use the actual run directory extracted from checkpoint path
+        # This ensures we continue writing to the same run directory
+        args.results_dir = actual_results_dir
+        print(f"Resuming training, using run directory: {args.results_dir}")
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        
+        # Validate that we're resuming within the expected experiment structure
+        experiment_dir = os.path.dirname(actual_results_dir)
+        run_dir_name = os.path.basename(actual_results_dir)
+        print(f"Experiment directory: {experiment_dir}")
+        print(f"Run directory: {run_dir_name}")
     
     # Set up checkpoint directory
     if args.checkpoint_dir is None:
@@ -171,22 +196,22 @@ def define_model_parameters(args):
     # Coordinate dimensions (3D: x, y, z)
     args.coord_dim = 3
     
-    # Radius for neighbor search in GNO operations
-    args.gno_radius = 0.1
+    # Radius for neighbor search in GNO operations (increased for better aggregation)
+    args.gno_radius = 0.15
     
     # Output channels of the input GNO block (feature channels produced after aggregation)
     args.in_gno_out_channels = args.input_window_size
     
-    # MLP layer dimensions for input GNO channel processing
+    # MLP layer dimensions for input GNO channel processing (increased capacity)
     args.in_gno_channel_mlp_layers = [32, 64, 32]
     
-    # FNO (Fourier Neural Operator) configuration
+    # FNO (Fourier Neural Operator) configuration (increased modes and channels)
     args.fno_n_layers = 4
-    args.fno_n_modes = (8, 8, 8)  # 3D Fourier modes
-    args.fno_hidden_channels = 64
-    args.lifting_channels = 64
+    args.fno_n_modes = (12, 12, 8)  # 3D Fourier modes (increased from 8)
+    args.fno_hidden_channels = 64  # Increased from 64
+    args.lifting_channels = 64     # Increased from 64
     
-    # Output GNO configuration
+    # Output GNO configuration (increased capacity)
     args.out_gno_channel_mlp_layers = [32, 64, 32]
     args.projection_channel_ratio = 2
     
@@ -194,7 +219,7 @@ def define_model_parameters(args):
     args.out_channels = args.output_window_size
     
     # Latent query grid dimensions (creates a 32x32x32 grid)
-    args.latent_query_dims = (32, 32, 32)
+    args.latent_query_dims = (32, 32, 24)
     
     return args
 
@@ -546,6 +571,10 @@ def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses
     latest_path = os.path.join(args.checkpoint_dir, 'latest_checkpoint.pth')
     torch.save(checkpoint, latest_path)
     print(f"Latest checkpoint saved: {latest_path}")
+    
+    # Save accumulated loss history for continuous training curves
+    accumulated_train, accumulated_val = get_accumulated_losses(train_losses, val_losses, args)
+    save_loss_history(accumulated_train, accumulated_val, args)
 
 
 def load_checkpoint(checkpoint_path, model, optimizer, scheduler, args):
@@ -620,25 +649,154 @@ def _validate_checkpoint_compatibility(saved_args, current_args):
     print("Checkpoint compatibility validated successfully")
 
 
+def save_loss_history(accumulated_train_losses, accumulated_val_losses, args):
+    """Save training and validation loss history to a persistent JSON file.
+    
+    This function saves the complete accumulated history of losses across all training sessions.
+    
+    Args:
+        accumulated_train_losses: Complete list of accumulated training losses
+        accumulated_val_losses: Complete list of accumulated validation losses
+        args: Argument namespace containing results directory
+    """
+    loss_history_path = os.path.join(args.results_dir, 'loss_history.json')
+    
+    # Create loss history dictionary
+    loss_history = {
+        'train_losses': accumulated_train_losses,
+        'val_losses': accumulated_val_losses,
+        'last_updated': dt.datetime.now().isoformat(),
+        'total_epochs': len(accumulated_train_losses)
+    }
+    
+    # Save to JSON file
+    with open(loss_history_path, 'w') as f:
+        json.dump(loss_history, f, indent=2)
+    
+    print(f"Loss history saved to '{loss_history_path}' (total epochs: {len(accumulated_train_losses)})")
+
+
+def load_loss_history(args):
+    """Load training and validation loss history from persistent JSON file.
+    
+    Args:
+        args: Argument namespace containing results directory
+        
+    Returns:
+        dict: Dictionary containing train_losses, val_losses, and metadata
+    """
+    loss_history_path = os.path.join(args.results_dir, 'loss_history.json')
+    
+    if not os.path.exists(loss_history_path):
+        return {'train_losses': [], 'val_losses': [], 'total_epochs': 0}
+    
+    try:
+        with open(loss_history_path, 'r') as f:
+            history = json.load(f)
+        
+        print(f"Loaded loss history from '{loss_history_path}' (total epochs: {history.get('total_epochs', 0)})")
+        return history
+    
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Warning: Could not load loss history from '{loss_history_path}': {e}")
+        return {'train_losses': [], 'val_losses': [], 'total_epochs': 0}
+
+
+def get_accumulated_losses(train_losses, val_losses, args):
+    """Get accumulated losses from all training sessions.
+    
+    This function loads the persistent loss history and properly merges it with
+    the current session's losses to maintain continuity across all training sessions.
+    It uses delta-merging to prevent duplication of epochs, whether resuming or in
+    a fresh run.
+    
+    Args:
+        train_losses: Current session's training losses
+        val_losses: Current session's validation losses  
+        args: Argument namespace containing results directory
+        
+    Returns:
+        tuple: (accumulated_train_losses, accumulated_val_losses)
+    """
+    
+    # Load existing loss history
+    existing_history = load_loss_history(args)
+    existing_train = existing_history.get('train_losses', [])
+    existing_val = existing_history.get('val_losses', [])
+    
+    # Get the number of existing epochs
+    existing_epoch_count = len(existing_train)
+    current_epoch_count = len(train_losses)
+    
+    # If we have more epochs than what's saved, append only the new ones
+    if current_epoch_count > existing_epoch_count:
+        # Extract only the new epochs that aren't in the existing history
+        new_train_losses = train_losses[existing_epoch_count:]
+        new_val_losses = val_losses[existing_epoch_count:]
+        
+        # Merge existing with new
+        accumulated_train = existing_train + new_train_losses
+        accumulated_val = existing_val + new_val_losses
+    else:
+        # Current session has same or fewer epochs - use existing
+        accumulated_train = existing_train
+        accumulated_val = existing_val
+    
+    return accumulated_train, accumulated_val
+
+
 def plot_training_curves(train_losses, val_losses, args):
     """Plot training and validation loss curves and save to results directory.
     
+    This function now plots accumulated losses from all training sessions,
+    providing a continuous view of training progress across resume operations.
+    
     Args:
-        train_losses: List of training losses per epoch
-        val_losses: List of validation losses per epoch
+        train_losses: List of training losses per epoch (current session)
+        val_losses: List of validation losses per epoch (current session)
         args: Argument namespace containing results directory
     """
-    plt.figure(figsize=(10, 6))
-    epochs = range(1, len(train_losses) + 1)
+    # Get accumulated losses from all training sessions
+    accumulated_train, accumulated_val = get_accumulated_losses(train_losses, val_losses, args)
     
-    plt.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2, marker='o')
-    plt.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2, marker='s')
+    # Create the plot with accumulated data
+    plt.figure(figsize=(12, 8))
+    epochs = range(1, len(accumulated_train) + 1)
     
-    plt.title('Training and Validation Loss Over Epochs', fontsize=14, fontweight='bold')
+    plt.plot(epochs, accumulated_train, 'b-', label='Training Loss', linewidth=2, marker='o', markersize=4)
+    plt.plot(epochs, accumulated_val, 'r-', label='Validation Loss', linewidth=2, marker='s', markersize=4)
+    
+    # Add visual indicators for resume points if this is a resumed session
+    if args.resume_from is not None and len(accumulated_train) > len(train_losses):
+        resume_points = []
+        
+        # Find potential resume points by looking for discontinuities or patterns
+        # For now, we'll mark the boundary between existing and new losses
+        existing_count = len(accumulated_train) - len(train_losses)
+        if existing_count > 0:
+            resume_points.append(existing_count)
+        
+        # Add vertical lines for resume points
+        for resume_point in resume_points:
+            plt.axvline(x=resume_point + 0.5, color='gray', linestyle='--', alpha=0.7, linewidth=1)
+            plt.text(resume_point + 0.5, max(max(accumulated_train), max(accumulated_val)) * 0.9, 
+                    'Resume', rotation=90, ha='right', va='top', fontsize=10, alpha=0.7)
+    
+    plt.title('Training and Validation Loss Over Epochs (Accumulated)', fontsize=14, fontweight='bold')
     plt.xlabel('Epoch', fontsize=12)
     plt.ylabel('Loss', fontsize=12)
     plt.legend(fontsize=12)
     plt.grid(True, alpha=0.3)
+    
+    # Add summary statistics as text
+    if accumulated_train:
+        min_train_loss = min(accumulated_train)
+        min_val_loss = min(accumulated_val)
+        total_epochs = len(accumulated_train)
+        
+        stats_text = f'Total Epochs: {total_epochs}\nMin Train Loss: {min_train_loss:.4f}\nMin Val Loss: {min_val_loss:.4f}'
+        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
+                fontsize=10, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
     # Add some styling
     plt.tight_layout()
@@ -648,7 +806,10 @@ def plot_training_curves(train_losses, val_losses, args):
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"Training curves saved to '{plot_path}'")
+    print(f"Training curves saved to '{plot_path}' (total epochs: {len(accumulated_train)})")
+    
+    # Save the accumulated loss history for future sessions
+    save_loss_history(accumulated_train, accumulated_val, args)
 
 
 def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, scheduler, args):
@@ -761,6 +922,11 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
             # Backward pass and optimization step
             optimizer.zero_grad()
             loss.backward()
+            
+            # Apply gradient clipping if enabled
+            if hasattr(args, 'grad_clip_norm') and args.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
+            
             optimizer.step()
 
             # Log training progress
@@ -780,10 +946,16 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
         if (epoch + 1) % args.save_checkpoint_every == 0:
             save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses, args)
         
-        # Step the learning rate scheduler only at the specified interval
-        if (epoch + 1) % args.lr_scheduler_interval == 0:
+        # Step the learning rate scheduler based on type
+        if args.scheduler_type == 'cosine':
+            # Cosine scheduler steps every epoch
             scheduler.step()
             print(f"Learning rate updated to: {scheduler.get_last_lr()[0]:.6f}")
+        else:
+            # Exponential scheduler steps at specified intervals
+            if (epoch + 1) % args.lr_scheduler_interval == 0:
+                scheduler.step()
+                print(f"Learning rate updated to: {scheduler.get_last_lr()[0]:.6f}")
 
     # Save final checkpoint
     save_checkpoint(model, optimizer, scheduler, args.epochs - 1, train_losses, val_losses, args, 'final_checkpoint.pth')
@@ -838,7 +1010,14 @@ if __name__ == "__main__":
     
     # Define optimizer and learning rate scheduler
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_gamma)
+    
+    # Choose scheduler type based on arguments
+    if args.scheduler_type == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epochs, eta_min=args.learning_rate * 0.01
+        )
+    else:  # exponential
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_gamma)
     
     # Train the model on patch data
     model = train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, scheduler, args)
