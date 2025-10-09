@@ -1,20 +1,27 @@
 """
-Train GINO on variable-density groundwater patches with true batch training.
+Train GINO on variable-density groundwater patches with multi-column support.
 
-This script:
-- Builds `GWPatchDataset` that yields sliding-window sequences per patch
-- Uses `PatchBatchSampler` to group batch indices from the same `patch_id`
-- Collates a batch into a single point cloud (core+ghost) and batches sequences
-- Generates a per-batch latent grid over the point cloud bounding box
-- Trains GINO with batched forward/backward passes
-- Supports resuming training from saved checkpoints
+This script extends the original train_gino_on_patches.py to support training on
+multiple target variables simultaneously. Input and output sequences concatenate
+values from all target columns along the last dimension.
+
+Key differences from single-column version:
+- Accepts multiple target columns via --target-cols argument
+- Input channels = input_window_size * n_target_cols
+- Output channels = output_window_size * n_target_cols
+- Sequences concatenate multiple variables along the last dimension
+
+Example:
+For 2 target columns ['mass_concentration', 'head'] with window size 5:
+- Single column: [N_points, 5] per variable
+- Multi-column: [N_points, 10] (5 timesteps × 2 variables concatenated)
 
 Tensor shapes (per batch):
 - point_coords: [N_points, 3]
 - latent_queries: [Qx, Qy, Qz, 3]
-- x (inputs): [B, N_points, input_window_size]
-- y (targets): [B, N_points, output_window_size]
-- outputs: [B, N_points, output_window_size]
+- x (inputs): [B, N_points, input_window_size * n_target_cols]
+- y (targets): [B, N_points, output_window_size * n_target_cols]
+- outputs: [B, N_points, output_window_size * n_target_cols]
 
 Loss is computed only on core points to avoid boundary artifacts from ghost points.
 
@@ -36,7 +43,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
 from src.data.transform import Normalize
-from src.data.patch_dataset import GWPatchDataset
+from src.data.patch_dataset_multi_col import GWPatchDatasetMultiCol
 from src.data.batch_sampler import PatchBatchSampler
 from src.models.neuralop.gino import GINO
 from src.models.neuralop.losses import LpLoss, H1Loss
@@ -45,14 +52,14 @@ def setup_arguments():
     """Parse command line arguments for data, model, and training.
 
     Notable arguments:
-    - --target-col: single observation field to model (mapped to `target_col_idx`)
+    - --target-cols: multiple observation fields to model (mapped to `target_col_indices`)
     - --input-window-size / --output-window-size: sliding window lengths
     - --batch-size: number of sequences per training step (from the same patch)
     
     Returns:
         argparse.Namespace: Parsed arguments with computed paths and configurations
     """
-    parser = argparse.ArgumentParser(description='Train GINO model on groundwater patches')
+    parser = argparse.ArgumentParser(description='Train GINO model on groundwater patches with multi-column support')
     
     # Data directories
     parser.add_argument('--base-data-dir', type=str, 
@@ -65,16 +72,18 @@ def setup_arguments():
     parser.add_argument('--results-dir', type=str, default='/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO',
                        help='Directory to save trained models and results')
 
-    # Target observation column (single)
-    parser.add_argument('--target-col', type=str, default='mass_concentration',
-                       help='Single target observation column name')
+    # Target observation columns (multiple)
+    parser.add_argument('--target-cols', type=str, nargs='+', 
+                       default=['mass_concentration', 'head'],
+                       help='List of target observation column names (e.g., mass_concentration head pressure)')
+    
     # Sequence lengths
     parser.add_argument('--input-window-size', type=int, default=10,
                        help='Number of time steps in each input sequence')
     parser.add_argument('--output-window-size', type=int, default=10,
                        help='Number of time steps in each output sequence')
     
-    # Model parameters (placeholder for future use)
+    # Model parameters
     parser.add_argument('--learning-rate', type=float, default=5e-4,
                        help='Learning rate for optimizer')
     parser.add_argument('--lr-gamma', type=float, default=0.98,
@@ -90,7 +99,6 @@ def setup_arguments():
                        help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32,
                        help='Batch size for training')
-    
     
     # Shuffling parameters
     parser.add_argument('--shuffle-within-batches', action='store_true', default=True,
@@ -110,7 +118,7 @@ def setup_arguments():
     parser.add_argument('--save-checkpoint-every', type=int, default=5,
                        help='Save checkpoint every N epochs')
     
-    # Other parameters (placeholder for future use)
+    # Other parameters
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use for training (cuda, cpu, or auto)')
     parser.add_argument('--seed', type=int, default=42,
@@ -126,7 +134,7 @@ def setup_arguments():
     if args.resume_from is None:
         # Create new timestamped directory for fresh training
         timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
-        args.results_dir = os.path.join(args.results_dir, f'gino_{timestamp}')
+        args.results_dir = os.path.join(args.results_dir, f'gino_multi_{timestamp}')
         os.makedirs(args.results_dir, exist_ok=True)
         print(f"Starting fresh training, created results directory: {args.results_dir}")
     else:
@@ -165,8 +173,8 @@ def setup_arguments():
     # Define model parameters
     args = define_model_parameters(args)
 
-    # Configure target observation columns
-    args = configure_target_col_idx(args)
+    # Configure target observation column indices
+    args = configure_target_col_indices(args)
 
     # Configure device
     args = configure_device(args)
@@ -180,12 +188,12 @@ def setup_arguments():
     return args
 
 def define_model_parameters(args):
-    """Define model parameters for GINO architecture.
+    """Define model parameters for GINO architecture with multi-column support.
 
     Notes:
-    - `in_gno_out_channels` are feature channels produced by the input GNO.
-    - `out_channels` is set to the output window size so the projection head
-      predicts a full future sequence per point.
+    - `in_gno_out_channels` is set to input_window_size * n_target_cols
+    - `out_channels` is set to output_window_size * n_target_cols
+    - This allows the model to handle concatenated multi-variable sequences
     
     Args:
         args: Argument namespace to modify with model parameters
@@ -196,29 +204,34 @@ def define_model_parameters(args):
     # Coordinate dimensions (3D: x, y, z)
     args.coord_dim = 3
     
-    # Radius for neighbor search in GNO operations (increased for better aggregation)
+    # Number of target columns
+    args.n_target_cols = len(args.target_cols)
+    
+    # Radius for neighbor search in GNO operations
     args.gno_radius = 0.15
     
-    # Output channels of the input GNO block (feature channels produced after aggregation)
-    args.in_gno_out_channels = args.input_window_size
+    # Output channels of the input GNO block 
+    # Multiplied by n_target_cols to handle concatenated variables
+    args.in_gno_out_channels = args.input_window_size * args.n_target_cols
     
-    # MLP layer dimensions for input GNO channel processing (increased capacity)
+    # MLP layer dimensions for input GNO channel processing
     args.in_gno_channel_mlp_layers = [32, 64, 32]
     
-    # FNO (Fourier Neural Operator) configuration (increased modes and channels)
+    # FNO (Fourier Neural Operator) configuration
     args.fno_n_layers = 4
-    args.fno_n_modes = (12, 12, 8)  # 3D Fourier modes (increased from 8)
-    args.fno_hidden_channels = 64  # Increased from 64
-    args.lifting_channels = 64     # Increased from 64
+    args.fno_n_modes = (12, 12, 8)  # 3D Fourier modes
+    args.fno_hidden_channels = 64
+    args.lifting_channels = 64
     
-    # Output GNO configuration (increased capacity)
+    # Output GNO configuration
     args.out_gno_channel_mlp_layers = [32, 64, 32]
     args.projection_channel_ratio = 2
     
-    # Predict the full output window per point
-    args.out_channels = args.output_window_size
+    # Predict the full output window per point for all target columns
+    # Multiplied by n_target_cols to handle concatenated variables
+    args.out_channels = args.output_window_size * args.n_target_cols
     
-    # Latent query grid dimensions (creates a 32x32x32 grid)
+    # Latent query grid dimensions
     args.latent_query_dims = (32, 32, 24)
     
     return args
@@ -244,19 +257,16 @@ def configure_device(args):
         raise ValueError("MPS is not available. Please use 'auto' or specify 'cpu'.")
     return args
 
-def configure_target_col_idx(args):
-    """Configure a single target observation column index from name.
+def configure_target_col_indices(args):
+    """Configure multiple target observation column indices from names.
 
     Maps human-readable column names to array indices for the observation data.
     
-    Backward compatibility: if a legacy list is provided in `args.target_cols`,
-    the first element is used.
-    
     Args:
-        args: Argument namespace with target column name
+        args: Argument namespace with target column names
         
     Returns:
-        argparse.Namespace: Modified args with target_col_idx added
+        argparse.Namespace: Modified args with target_col_indices added
     """
     # Mapping from column names to indices in the observation array
     names_to_idx = {
@@ -265,17 +275,12 @@ def configure_target_col_idx(args):
         'pressure': 2
     }
     
-    if hasattr(args, 'target_col') and args.target_col is not None:
-        args.target_col_idx = names_to_idx[args.target_col]
-    else:
-        # Backward compatibility if a list was provided elsewhere
-        target_cols = getattr(args, 'target_cols', ['mass_concentration'])
-        if isinstance(target_cols, (list, tuple)):
-            args.target_col_idx = names_to_idx[target_cols[0]]
-            args.target_col = target_cols[0]
-        else:
-            args.target_col_idx = names_to_idx[target_cols]
-            args.target_col = target_cols
+    # Convert target column names to indices
+    args.target_col_indices = [names_to_idx[col] for col in args.target_cols]
+    
+    print(f"Target columns: {args.target_cols}")
+    print(f"Target column indices: {args.target_col_indices}")
+    
     return args
 
 def calculate_coord_transform(raw_data_dir):
@@ -312,8 +317,8 @@ def calculate_obs_transform(raw_data_dir,
                             target_obs_cols=['mass_concentration', 'head', 'pressure']):
     """Calculate mean and std of output variables and create observation transform.
 
-    Normalizes all listed columns for consistency. The dataset will then select a
-    single target by `target_col_idx` before sequencing.
+    Normalizes all listed columns for consistency. The dataset will then select
+    multiple targets by `target_col_indices` before sequencing.
     
     Args:
         raw_data_dir: Directory containing raw CSV files
@@ -344,50 +349,52 @@ def calculate_obs_transform(raw_data_dir,
     return obs_transform
 
 def create_patch_datasets(patch_data_dir, coord_transform, obs_transform, **kwargs):
-    """Create train/val `GWPatchDataset` with normalization and sequencing.
+    """Create train/val `GWPatchDatasetMultiCol` with normalization and sequencing.
 
     Creates datasets that apply coordinate and observation normalization,
-    then generate sliding window sequences for training and validation.
+    then generate sliding window sequences for training and validation with
+    multiple target columns concatenated.
     
     Args:
         patch_data_dir: Directory containing patch data files
         coord_transform: Normalization transform for coordinates
         obs_transform: Normalization transform for observations
-        **kwargs: Additional arguments including window sizes and target column index
+        **kwargs: Additional arguments including window sizes and target column indices
         
     Returns:
         tuple: (train_dataset, validation_dataset)
     """
     # Create training dataset
-    train_ds = GWPatchDataset(
+    train_ds = GWPatchDatasetMultiCol(
         data_path=patch_data_dir,
         dataset='train', 
         coord_transform=coord_transform, 
         obs_transform=obs_transform,
         input_window_size=kwargs.get('input_window_size', 10),
         output_window_size=kwargs.get('output_window_size', 10),
-        target_col_idx=kwargs.get('target_col_idx', None),
+        target_col_indices=kwargs.get('target_col_indices', None),
     )
     
     # Create validation dataset
-    val_ds = GWPatchDataset(
+    val_ds = GWPatchDatasetMultiCol(
         data_path=patch_data_dir,
         dataset='val', 
         coord_transform=coord_transform, 
         obs_transform=obs_transform,
         input_window_size=kwargs.get('input_window_size', 10),
         output_window_size=kwargs.get('output_window_size', 10),
-        target_col_idx=kwargs.get('target_col_idx', None),
+        target_col_indices=kwargs.get('target_col_indices', None),
     )
 
     return train_ds, val_ds
 
 
 def define_ginos_model(args):
-    """Define GINO model with 3D coordinates and sequence projection head.
+    """Define GINO model with 3D coordinates and multi-column sequence projection head.
     
     Initializes a Graph-Informed Neural Operator (GINO) with parameters
-    configured for 3D groundwater modeling with temporal sequences.
+    configured for 3D groundwater modeling with temporal sequences across
+    multiple target variables.
     
     Args:
         args: Argument namespace containing model hyperparameters
@@ -423,6 +430,8 @@ def _make_collate_fn(args):
     The sampler ensures a batch contains indices from a single `patch_id`.
     We build one point cloud per batch (core+ghost), a latent grid over its
     bounding box, and then stack input/output sequences along the batch dim.
+    
+    For multi-column support, the sequences are already concatenated in the dataset.
     
     Args:
         args: Argument namespace containing device and latent grid dimensions
@@ -462,21 +471,22 @@ def _make_collate_fn(args):
         x_list, y_list = [], []
         for sample in batch_samples:
             # Combine core and ghost inputs/outputs for each sample
+            # Note: sequences are already concatenated across target columns in the dataset
             sample_input = torch.concat([sample['core_in'], sample['ghost_in']], dim=0).float().unsqueeze(0)
             sample_output = torch.concat([sample['core_out'], sample['ghost_out']], dim=0).float().unsqueeze(0)
             x_list.append(sample_input)
             y_list.append(sample_output)
 
         # Stack all sequences into batch tensors
-        x = torch.cat(x_list, dim=0)  # [B, N_points, input_window_size]
-        y = torch.cat(y_list, dim=0)  # [B, N_points, output_window_size]
+        x = torch.cat(x_list, dim=0)  # [B, N_points, input_window_size * n_target_cols]
+        y = torch.cat(y_list, dim=0)  # [B, N_points, output_window_size * n_target_cols]
 
         # Return batch dictionary
         batch = {
             'point_coords': point_coords,      # [N_points, 3]
             'latent_queries': latent_queries,  # [Qx, Qy, Qz, 3]
-            'x': x,                           # [B, N_points, input_window_size]
-            'y': y,                           # [B, N_points, output_window_size]
+            'x': x,                           # [B, N_points, input_window_size * n_target_cols]
+            'y': y,                           # [B, N_points, output_window_size * n_target_cols]
             'core_len': len(core_coords),     # Number of core points (for loss masking)
         }
         return batch
@@ -573,8 +583,21 @@ def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses
     print(f"Latest checkpoint saved: {latest_path}")
     
     # Save accumulated loss history for continuous training curves
-    accumulated_train, accumulated_val = get_accumulated_losses(train_losses, val_losses, args)
-    save_loss_history(accumulated_train, accumulated_val, args)
+    # Save both in results_dir and next to the checkpoint for better resumption
+    accumulated_train, accumulated_val = get_accumulated_losses(train_losses, val_losses, args, checkpoint_path)
+    
+    # Also save loss history next to the checkpoint file
+    checkpoint_loss_history = os.path.join(os.path.dirname(checkpoint_path), 'loss_history.json')
+    loss_history = {
+        'train_losses': accumulated_train,
+        'val_losses': accumulated_val,
+        'last_updated': dt.datetime.now().isoformat(),
+        'total_epochs': len(accumulated_train),
+        'checkpoint_file': os.path.basename(checkpoint_path)
+    }
+    with open(checkpoint_loss_history, 'w') as f:
+        json.dump(loss_history, f, indent=2)
+    print(f"Loss history saved with checkpoint: {checkpoint_loss_history}")
 
 
 def load_checkpoint(checkpoint_path, model, optimizer, scheduler, args):
@@ -636,7 +659,7 @@ def _validate_checkpoint_compatibility(saved_args, current_args):
     critical_params = [
         'coord_dim', 'gno_radius', 'in_gno_out_channels', 'fno_n_layers', 
         'fno_n_modes', 'fno_hidden_channels', 'out_channels', 'latent_query_dims',
-        'input_window_size', 'output_window_size', 'target_col_idx'
+        'input_window_size', 'output_window_size', 'target_col_indices', 'n_target_cols'
     ]
     
     for param in critical_params:
@@ -676,33 +699,53 @@ def save_loss_history(accumulated_train_losses, accumulated_val_losses, args):
     print(f"Loss history saved to '{loss_history_path}' (total epochs: {len(accumulated_train_losses)})")
 
 
-def load_loss_history(args):
+def load_loss_history(args, checkpoint_path=None):
     """Load training and validation loss history from persistent JSON file.
+    
+    When resuming training (checkpoint_path provided), tries to load loss history from:
+    1. The checkpoint directory first (most accurate for resuming)
+    2. Falls back to results directory if not found
+    3. Returns empty history if neither exists
     
     Args:
         args: Argument namespace containing results directory
+        checkpoint_path: Optional path to checkpoint file being loaded
         
     Returns:
         dict: Dictionary containing train_losses, val_losses, and metadata
     """
-    loss_history_path = os.path.join(args.results_dir, 'loss_history.json')
+    # First try to load from checkpoint directory if resuming
+    if checkpoint_path is not None:
+        checkpoint_loss_history = os.path.join(os.path.dirname(checkpoint_path), 'loss_history.json')
+        if os.path.exists(checkpoint_loss_history):
+            try:
+                with open(checkpoint_loss_history, 'r') as f:
+                    history = json.load(f)
+                print(f"Loaded loss history from checkpoint directory: {checkpoint_loss_history}")
+                print(f"Total epochs in history: {history.get('total_epochs', 0)}")
+                return history
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"Warning: Could not load checkpoint loss history from '{checkpoint_loss_history}': {e}")
+                # Continue to try results directory
     
-    if not os.path.exists(loss_history_path):
-        return {'train_losses': [], 'val_losses': [], 'total_epochs': 0}
+    # Try results directory as fallback
+    results_loss_history = os.path.join(args.results_dir, 'loss_history.json')
+    if os.path.exists(results_loss_history):
+        try:
+            with open(results_loss_history, 'r') as f:
+                history = json.load(f)
+            print(f"Loaded loss history from results directory: {results_loss_history}")
+            print(f"Total epochs in history: {history.get('total_epochs', 0)}")
+            return history
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: Could not load results loss history from '{results_loss_history}': {e}")
     
-    try:
-        with open(loss_history_path, 'r') as f:
-            history = json.load(f)
-        
-        print(f"Loaded loss history from '{loss_history_path}' (total epochs: {history.get('total_epochs', 0)})")
-        return history
-    
-    except (json.JSONDecodeError, KeyError) as e:
-        print(f"Warning: Could not load loss history from '{loss_history_path}': {e}")
-        return {'train_losses': [], 'val_losses': [], 'total_epochs': 0}
+    # Return empty history if no valid history found
+    print("No existing loss history found, starting fresh.")
+    return {'train_losses': [], 'val_losses': [], 'total_epochs': 0}
 
 
-def get_accumulated_losses(train_losses, val_losses, args):
+def get_accumulated_losses(train_losses, val_losses, args, checkpoint_path=None):
     """Get accumulated losses from all training sessions.
     
     This function loads the persistent loss history and properly merges it with
@@ -714,13 +757,14 @@ def get_accumulated_losses(train_losses, val_losses, args):
         train_losses: Current session's training losses
         val_losses: Current session's validation losses  
         args: Argument namespace containing results directory
+        checkpoint_path: Optional path to checkpoint file being loaded when resuming
         
     Returns:
         tuple: (accumulated_train_losses, accumulated_val_losses)
     """
     
-    # Load existing loss history
-    existing_history = load_loss_history(args)
+    # Load existing loss history, prioritizing checkpoint directory when resuming
+    existing_history = load_loss_history(args, checkpoint_path)
     existing_train = existing_history.get('train_losses', [])
     existing_val = existing_history.get('val_losses', [])
     
@@ -757,7 +801,9 @@ def plot_training_curves(train_losses, val_losses, args):
         args: Argument namespace containing results directory
     """
     # Get accumulated losses from all training sessions
-    accumulated_train, accumulated_val = get_accumulated_losses(train_losses, val_losses, args)
+    # Pass checkpoint path if we're resuming training
+    checkpoint_path = args.resume_from if hasattr(args, 'resume_from') else None
+    accumulated_train, accumulated_val = get_accumulated_losses(train_losses, val_losses, args, checkpoint_path)
     
     # Create the plot with accumulated data
     plt.figure(figsize=(12, 8))
@@ -832,28 +878,27 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
         GINO: Trained model
     """
     # Create training sampler (will reshuffle automatically each epoch)
-    # OPTIMIZATION: No need to recreate sampler/loader every epoch!
     train_sampler = PatchBatchSampler(
         train_patch_ds, 
         batch_size=args.batch_size,
-        shuffle_within_batches=args.shuffle_within_batches,  # Use command line argument
-        shuffle_patches=args.shuffle_patches,                 # Use command line argument
-        seed=args.seed                                       # Use the same seed for reproducibility
+        shuffle_within_batches=args.shuffle_within_batches,
+        shuffle_patches=args.shuffle_patches,
+        seed=args.seed
     )
     
     # Create validation sampler (no shuffling for deterministic evaluation)
     val_sampler = PatchBatchSampler(
         val_patch_ds, 
         batch_size=args.batch_size,
-        shuffle_within_batches=False, # No shuffling for validation
-        shuffle_patches=False,        # No shuffling for validation
-        seed=None                    # No seed for validation (deterministic)
+        shuffle_within_batches=False,
+        shuffle_patches=False,
+        seed=None
     )
 
     # Custom collate function to handle patch-based batching
     collate_fn = _make_collate_fn(args)
 
-    # Create data loaders (fixed - no recreation needed)
+    # Create data loaders
     train_loader = DataLoader(train_patch_ds, batch_sampler=train_sampler, collate_fn=collate_fn)
     val_loader = DataLoader(val_patch_ds, batch_sampler=val_sampler, collate_fn=collate_fn)
 
@@ -902,17 +947,17 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
             outputs = model(
                 input_geom=point_coords,      # Point cloud coordinates
                 latent_queries=latent_queries, # Regular grid for FNO
-                x=x,                          # Input sequences
+                x=x,                          # Input sequences (concatenated across target cols)
                 output_queries=point_coords,  # Query points (same as input geometry)
             )
             
             # Debug: Print shapes of key variables
-            print(f"DEBUG - Step {step_idx}:")
-            print(f"  point_coords shape: {point_coords.shape}")
-            print(f"  latent_queries shape: {latent_queries.shape}")
-            print(f"  x shape: {x.shape}")
-            print(f"  y shape: {y.shape}")
-            print(f"  outputs shape: {outputs.shape}")
+            # print(f"DEBUG - Step {step_idx}:")
+            # print(f"  point_coords shape: {point_coords.shape}")
+            # print(f"  latent_queries shape: {latent_queries.shape}")
+            # print(f"  x shape: {x.shape}")
+            # print(f"  y shape: {y.shape}")
+            # print(f"  outputs shape: {outputs.shape}")
 
             # Extract core points only for loss computation
             # Ghost points are excluded to avoid boundary artifacts
@@ -996,12 +1041,12 @@ if __name__ == "__main__":
     obs_transform = calculate_obs_transform(args.raw_data_dir)
     
     # Create patch datasets with normalization transforms
-    # These datasets handle sliding window sequence generation
+    # These datasets handle sliding window sequence generation with multi-column support
     train_patch_ds, val_patch_ds = create_patch_datasets(
         args.patch_data_dir, 
         coord_transform, 
         obs_transform,
-        target_col_idx=args.target_col_idx,
+        target_col_indices=args.target_col_indices,
         input_window_size=args.input_window_size,
         output_window_size=args.output_window_size,
     )
@@ -1009,7 +1054,10 @@ if __name__ == "__main__":
     print(f"Train dataset length: {len(train_patch_ds)}")
     print(f"Val dataset length: {len(val_patch_ds)}")
 
-    print(f"Target column: {args.target_col}, target column idx: {args.target_col_idx}")
+    print(f"Target columns: {args.target_cols}, target column indices: {args.target_col_indices}")
+    print(f"Number of target columns: {args.n_target_cols}")
+    print(f"Input channels: {args.in_gno_out_channels} = {args.input_window_size} * {args.n_target_cols}")
+    print(f"Output channels: {args.out_channels} = {args.output_window_size} * {args.n_target_cols}")
     print(f"Shuffling configuration: within_batches={args.shuffle_within_batches}, patches={args.shuffle_patches}")
 
     # Define and initialize GINO model
@@ -1034,3 +1082,4 @@ if __name__ == "__main__":
     model_path = os.path.join(args.results_dir, 'gino_model.pth')
     torch.save(model.state_dict(), model_path)
     print(f"Model saved to '{model_path}'")
+
