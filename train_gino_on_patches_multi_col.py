@@ -48,6 +48,46 @@ from src.data.batch_sampler import PatchBatchSampler
 from src.models.neuralop.gino import GINO
 from src.models.neuralop.losses import LpLoss, H1Loss
 
+# --- Begin ultra-robust DP compatibility patch for tltorch complex buffers ---
+try:
+    import sys, pkgutil, importlib, inspect
+    import torch
+    import torch.nn as _nn
+    import tltorch  # root package
+
+    def _safe_register_buffer(self, name, value, persistent=True):
+        # Only convert actual complex tensors; real tensors pass through unchanged
+        if torch.is_tensor(value) and value.is_complex():
+            value = torch.view_as_real(value)
+        # Use base nn.Module.register_buffer to avoid any custom overrides
+        return _nn.Module.register_buffer(self, name, value, persistent=persistent)
+
+    patched = []
+
+    # Walk all tltorch submodules and patch classes in modules likely to hold complex/factorized tensors
+    for _finder, _modname, _ispkg in pkgutil.walk_packages(tltorch.__path__, tltorch.__name__ + '.'):
+        if not any(key in _modname for key in ('factorized', 'complex')):
+            continue
+        try:
+            _m = importlib.import_module(_modname)
+        except Exception:
+            continue
+
+        for _name, _obj in inspect.getmembers(_m, inspect.isclass):
+            # Only patch torch.nn.Module subclasses
+            try:
+                if issubclass(_obj, _nn.Module):
+                    # Overwrite register_buffer unconditionally with the safe version
+                    setattr(_obj, 'register_buffer', _safe_register_buffer)
+                    patched.append(f'{_modname}:{_name}')
+            except Exception:
+                pass
+
+    print(f"Patched tltorch DP compatibility on {len(patched)} classes. Examples: {patched[:6]}")
+except Exception as _e:
+    print(f"Warning: DP compatibility patch failed: {_e}")
+# --- End ultra-robust patch ---
+
 def setup_arguments():
     """Parse command line arguments for data, model, and training.
 
@@ -424,6 +464,60 @@ def define_ginos_model(args):
     ).to(args.device)
     return model
 
+# ------------------------------
+# DataParallel adapter + helpers
+# ------------------------------
+class GINODataParallelAdapter(torch.nn.Module):
+    """
+    Thin wrapper so DataParallel splits along the batch dimension of `x` only.
+    We add a leading batch dim to `input_geom`, `latent_queries`, and `output_queries`
+    before calling the model; inside the adapter we strip that extra dim back off.
+    """
+    def __init__(self, inner: torch.nn.Module):
+        super().__init__()
+        self.inner = inner  # the actual GINO model
+
+    def forward(self, *, input_geom, latent_queries, x, output_queries):
+        # If these were broadcast with a fake batch dimension, drop it per-replica.
+        if input_geom.dim() == 3:   # [B, N_points, 3] -> [N_points, 3]
+            input_geom = input_geom[0]
+        if output_queries.dim() == 3:  # [B, N_points, 3] -> [N_points, 3]
+            output_queries = output_queries[0]
+        if latent_queries.dim() == 5:  # [B, Qx, Qy, Qz, 3] -> [Qx, Qy, Qz, 3]
+            latent_queries = latent_queries[0]
+        # Forward into the real model.
+        return self.inner(
+            input_geom=input_geom,
+            latent_queries=latent_queries,
+            x=x,
+            output_queries=output_queries,
+        )
+
+def _unwrap_dp(model):
+    # If wrapped in DataParallel, return the underlying module
+    return model.module if isinstance(model, torch.nn.DataParallel) else model
+
+def _unwrap_model_for_state_dict(model: torch.nn.Module) -> torch.nn.Module:
+    """
+    Always save/load the underlying GINO module regardless of DataParallel/adapter wrapping.
+    """
+    m = model
+    if hasattr(m, 'module'):  # DataParallel
+        m = m.module
+    if hasattr(m, 'inner'):   # our adapter
+        m = m.inner
+    return m
+
+def _broadcast_static_inputs_for_dp(point_coords, latent_queries, batch_size):
+    """
+    Create a fake leading batch dimension so DataParallel scatters along batch only.
+    These are inexpensive `expand` views (no memory copy).
+    """
+    input_geom_b = point_coords.unsqueeze(0).expand(batch_size, -1, -1)              # [B, N_points, 3]
+    output_queries_b = input_geom_b                                                  # same as input_geom
+    latent_queries_b = latent_queries.unsqueeze(0).expand((batch_size,) + latent_queries.shape)  # [B, Qx, Qy, Qz, 3]
+    return input_geom_b, latent_queries_b, output_queries_b
+
 def _make_collate_fn(args):
     """Create a collate function that batches samples from the same patch.
 
@@ -520,12 +614,20 @@ def evaluate_model_on_patches(val_loader, model, loss_fn, args):
             x = batch['x'].to(args.device).float()
             y = batch['y'].to(args.device).float()
 
+            # >>> DataParallel-friendly broadcasting for static inputs <<<
+            input_geom_b, latent_queries_b, output_queries_b = _broadcast_static_inputs_for_dp(
+                point_coords, latent_queries, x.shape[0]
+            )
+
+            # Avoid DP replication during evaluation
+            inner_model = _unwrap_dp(model)
+
             # Forward pass through model
-            outputs = model(
-                input_geom=point_coords,
-                latent_queries=latent_queries,
+            outputs = inner_model(
+                input_geom=input_geom_b,
+                latent_queries=latent_queries_b,
                 x=x,
-                output_queries=point_coords,
+                output_queries=output_queries_b,
             )
 
             # Extract core points only for loss computation
@@ -566,7 +668,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses
     # Save all training state
     checkpoint = {
         'epoch': epoch,
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': _unwrap_model_for_state_dict(model).state_dict(),  # DP-safe
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'train_losses': train_losses,
@@ -623,7 +725,7 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler, args):
     _validate_checkpoint_compatibility(saved_args, args)
     
     # Load model state
-    model.load_state_dict(checkpoint['model_state_dict'])
+    _unwrap_model_for_state_dict(model).load_state_dict(checkpoint['model_state_dict'])  # DP-safe
     print("Model state loaded successfully")
     
     # Load optimizer state
@@ -943,12 +1045,17 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
             batch_size = x.shape[0]
             n_points = x.shape[1]
 
+            # >>> DataParallel-friendly broadcasting for static inputs <<<
+            input_geom_b, latent_queries_b, output_queries_b = _broadcast_static_inputs_for_dp(
+                point_coords, latent_queries, batch_size
+            )
+
             # Forward pass through GINO model
             outputs = model(
-                input_geom=point_coords,      # Point cloud coordinates
-                latent_queries=latent_queries, # Regular grid for FNO
-                x=x,                          # Input sequences (concatenated across target cols)
-                output_queries=point_coords,  # Query points (same as input geometry)
+                input_geom=input_geom_b,      # [B, N_points, 3] view; adapter will squeeze per-replica
+                latent_queries=latent_queries_b, # [B, Qx, Qy, Qz, 3] view; adapter squeezes
+                x=x,                          # [B, N_points, ...] is the actual scattered dimension
+                output_queries=output_queries_b,  # [B, N_points, 3] view; adapter squeezes
             )
             
             # Debug: Print shapes of key variables
@@ -1061,9 +1168,15 @@ if __name__ == "__main__":
     print(f"Shuffling configuration: within_batches={args.shuffle_within_batches}, patches={args.shuffle_patches}")
 
     # Define and initialize GINO model
-    model = define_ginos_model(args)
-    print(f"Model: {model}")
-    
+    base_model = define_ginos_model(args)
+    print(f"Model: {base_model}")
+
+    # >>> DataParallel wrapping (single-node multi-GPU). Keeps non-batched tensors intact per replica via adapter. <<<
+    model = GINODataParallelAdapter(base_model)
+    if args.device.startswith("cuda") and torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        print(f"Using DataParallel on {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+
     # Define optimizer and learning rate scheduler
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     
@@ -1080,6 +1193,5 @@ if __name__ == "__main__":
 
     # Save trained model state dict to results directory
     model_path = os.path.join(args.results_dir, 'gino_model.pth')
-    torch.save(model.state_dict(), model_path)
+    torch.save(_unwrap_model_for_state_dict(model).state_dict(), model_path)  # DP-safe final save
     print(f"Model saved to '{model_path}'")
-
