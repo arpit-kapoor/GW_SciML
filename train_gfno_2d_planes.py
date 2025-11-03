@@ -66,6 +66,8 @@ def setup_arguments():
     parser.add_argument('--results-dir', type=str, 
                        default='/srv/scratch/z5370003/projects/results/04_groundwater/2d_planes/GFNO',
                        help='Directory to save trained models and results')
+    parser.add_argument('--val-ratio', type=float, default=0.2,
+                       help='Ratio of data to use for validation (default: 0.2)')
     
     # Model parameters
     parser.add_argument('--learning-rate', type=float, default=1e-3,
@@ -156,6 +158,7 @@ def setup_arguments():
     print(f"  Batch size: {args.batch_size}")
     print(f"  Epochs: {args.epochs}")
     print(f"  Learning rate: {args.learning_rate}")
+    print(f"  Validation ratio: {args.val_ratio}")
     print(f"  Multi-GPU: {args.use_multi_gpu and torch.cuda.device_count() > 1}")
     
     return args
@@ -235,30 +238,39 @@ def configure_device(args):
     return args
 
 
-def create_datasets(data_dir, **kwargs):
+def create_datasets(data_dir, val_ratio=0.2, **kwargs):
     """Create train/val datasets from 2D plane sequence files.
     
     Args:
         data_dir: Directory containing plane sequence data
+        val_ratio: Ratio of sequences to use for validation (default: 0.2)
         **kwargs: Additional arguments (currently unused)
         
     Returns:
         tuple: (train_dataset, validation_dataset)
     """
     print(f"\nLoading datasets from {data_dir}...")
+    print(f"Train/Val split ratio: {1-val_ratio:.1%} / {val_ratio:.1%}")
     
     # Create training dataset
     train_ds = GWPlaneDatasetFromFiles(
         data_dir=data_dir,
+        dataset='train',
+        val_ratio=val_ratio,
         fill_nan_value=-999.0
     )
     
-    # For now, use the same dataset for validation
-    # TODO: Split into proper train/val sets
-    val_ds = train_ds
+    # Create validation dataset
+    val_ds = GWPlaneDatasetFromFiles(
+        data_dir=data_dir,
+        dataset='val',
+        val_ratio=val_ratio,
+        fill_nan_value=-999.0
+    )
     
     print(f"Training dataset: {len(train_ds)} sequences")
     print(f"Validation dataset: {len(val_ds)} sequences")
+    print(f"Total sequences: {len(train_ds) + len(val_ds)}")
     
     return train_ds, val_ds
 
@@ -828,7 +840,7 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(args.seed)
     
     # Create datasets
-    train_ds, val_ds = create_datasets(args.data_dir)
+    train_ds, val_ds = create_datasets(args.data_dir, val_ratio=args.val_ratio)
     
     # Create model
     print("\nInitializing GFNO model...")

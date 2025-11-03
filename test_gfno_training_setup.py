@@ -28,17 +28,37 @@ from src.models import GFNO
 from src.models.neuralop.losses import LpLoss
 
 
-def test_data_loading(data_dir, batch_size=4):
+def test_data_loading(data_dir, batch_size=4, val_ratio=0.2):
     """Test dataset and dataloader."""
     print("\n" + "="*80)
     print("TEST 1: Data Loading")
     print("="*80)
     
     try:
-        # Create dataset
-        print(f"Loading dataset from: {data_dir}")
-        dataset = GWPlaneDatasetFromFiles(data_dir=data_dir, fill_nan_value=-999.0)
-        print(f"✓ Dataset loaded: {len(dataset)} sequences")
+        # Create training dataset
+        print(f"Loading training dataset from: {data_dir}")
+        train_dataset = GWPlaneDatasetFromFiles(
+            data_dir=data_dir, 
+            dataset='train',
+            val_ratio=val_ratio,
+            fill_nan_value=-999.0
+        )
+        print(f"✓ Training dataset loaded: {len(train_dataset)} sequences")
+        
+        # Create validation dataset
+        print(f"Loading validation dataset from: {data_dir}")
+        val_dataset = GWPlaneDatasetFromFiles(
+            data_dir=data_dir,
+            dataset='val', 
+            val_ratio=val_ratio,
+            fill_nan_value=-999.0
+        )
+        print(f"✓ Validation dataset loaded: {len(val_dataset)} sequences")
+        print(f"✓ Total sequences: {len(train_dataset) + len(val_dataset)}")
+        print(f"✓ Train/Val split: {len(train_dataset)}/{len(val_dataset)} ({1-val_ratio:.1%}/{val_ratio:.1%})")
+        
+        # Use training dataset for further tests
+        dataset = train_dataset
         
         # Create sampler
         sampler = PatchBatchSampler(dataset, batch_size=batch_size, shuffle_within_batches=False, shuffle_patches=False)
@@ -328,12 +348,14 @@ def main():
     data_dir = '/Users/arpitkapoor/data/GW/2d_plane_sequences'
     results_dir = '/tmp/gfno_test'
     batch_size = 4
+    val_ratio = 0.2
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     print(f"\nConfiguration:")
     print(f"  Data dir: {data_dir}")
     print(f"  Results dir: {results_dir}")
     print(f"  Batch size: {batch_size}")
+    print(f"  Validation ratio: {val_ratio}")
     print(f"  Device: {device}")
     
     # Create results directory
@@ -343,7 +365,7 @@ def main():
     results = {}
     
     # Test 1: Data loading
-    success, dataset, dataloader = test_data_loading(data_dir, batch_size)
+    success, dataset, dataloader = test_data_loading(data_dir, batch_size, val_ratio)
     results['Data Loading'] = success
     if not success:
         print("\n✗ Cannot proceed without data loading. Exiting.")

@@ -27,6 +27,8 @@ class GWPlaneDataset(Dataset):
         self,
         input_sequences,
         output_sequences,
+        dataset='train',
+        val_ratio=0.2,
         coord_transform=None,
         obs_transform=None,
         fill_nan_value=-999.0
@@ -37,29 +39,44 @@ class GWPlaneDataset(Dataset):
         Args:
             input_sequences (dict): Dictionary mapping plane_id to input sequence data.
             output_sequences (dict): Dictionary mapping plane_id to output sequence data.
+            dataset (str): Dataset type, either 'train' or 'val'.
+            val_ratio (float): Ratio of sequences to use for validation (default: 0.2).
             coord_transform (callable, optional): Transform function for coordinates.
             obs_transform (callable, optional): Transform function for observations.
             fill_nan_value (float): Value to replace NaN values with (default: -999.0).
         """
         self.input_sequences = input_sequences
         self.output_sequences = output_sequences
+        self.dataset = dataset
+        self.val_ratio = val_ratio
         self.coord_transform = coord_transform
         self.obs_transform = obs_transform
         self.fill_nan_value = fill_nan_value
 
         # Build index mapping: (plane_id, sequence_idx) -> global_idx
+        # Split sequences per plane into train/val based on val_ratio
         self.index_map = []
         self.plane_ids = sorted(input_sequences.keys())
         
         for plane_id in self.plane_ids:
             n_sequences = len(input_sequences[plane_id]['input_geom'])
-            for seq_idx in range(n_sequences):
+            
+            # Calculate split index for this plane
+            train_idx = int(n_sequences * (1 - val_ratio))
+            
+            # Add sequences based on dataset type
+            if dataset == 'train':
+                seq_range = range(0, train_idx)
+            else:  # 'val'
+                seq_range = range(train_idx, n_sequences)
+            
+            for seq_idx in seq_range:
                 self.index_map.append((plane_id, seq_idx))
         
         # Cache plane_ids for fast access by PlaneBatchSampler
         self._patch_ids_cache = None
         
-        print(f"Initialized GWPlaneDataset with {len(self.index_map)} sequences across {len(self.plane_ids)} planes")
+        print(f"Initialized GWPlaneDataset ({dataset}) with {len(self.index_map)} sequences across {len(self.plane_ids)} planes (val_ratio={val_ratio})")
 
     def __len__(self):
         """
@@ -177,6 +194,8 @@ class GWPlaneDatasetFromFiles(Dataset):
     def __init__(
         self,
         data_dir,
+        dataset='train',
+        val_ratio=0.2,
         coord_transform=None,
         obs_transform=None,
         fill_nan_value=-999.0
@@ -186,16 +205,21 @@ class GWPlaneDatasetFromFiles(Dataset):
 
         Args:
             data_dir (str): Path to the directory containing plane subdirectories.
+            dataset (str): Dataset type, either 'train' or 'val'.
+            val_ratio (float): Ratio of sequences to use for validation (default: 0.2).
             coord_transform (callable, optional): Transform function for coordinates.
             obs_transform (callable, optional): Transform function for observations.
             fill_nan_value (float): Value to replace NaN values with (default: -999.0).
         """
         self.data_dir = data_dir
+        self.dataset = dataset
+        self.val_ratio = val_ratio
         self.coord_transform = coord_transform
         self.obs_transform = obs_transform
         self.fill_nan_value = fill_nan_value
 
         # Build index mapping by scanning directory
+        # Split sequences per plane into train/val based on val_ratio
         self.index_map = []
         self.plane_dirs = sorted([d for d in os.listdir(data_dir) if d.startswith('plane_')])
         
@@ -209,13 +233,22 @@ class GWPlaneDatasetFromFiles(Dataset):
                 input_geom = np.load(input_geom_path)
                 n_sequences = len(input_geom)
                 
-                for seq_idx in range(n_sequences):
+                # Calculate split index for this plane
+                train_idx = int(n_sequences * (1 - val_ratio))
+                
+                # Add sequences based on dataset type
+                if dataset == 'train':
+                    seq_range = range(0, train_idx)
+                else:  # 'val'
+                    seq_range = range(train_idx, n_sequences)
+                
+                for seq_idx in seq_range:
                     self.index_map.append((plane_id, plane_dir, seq_idx))
         
         # Cache plane_ids for fast access by PlaneBatchSampler
         self._patch_ids_cache = None
         
-        print(f"Initialized GWPlaneDatasetFromFiles with {len(self.index_map)} sequences across {len(self.plane_dirs)} planes")
+        print(f"Initialized GWPlaneDatasetFromFiles ({dataset}) with {len(self.index_map)} sequences across {len(self.plane_dirs)} planes (val_ratio={val_ratio})")
 
     def __len__(self):
         """

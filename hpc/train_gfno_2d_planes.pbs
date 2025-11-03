@@ -51,6 +51,7 @@ DATA_DIR="/srv/scratch/z5370003/projects/data/GW/2d_plane_sequences"
 EPOCHS="${EPOCHS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-10}"
+VAL_RATIO="${VAL_RATIO:-0.2}"
 
 # Improved hyperparameters for better convergence
 # These can also be overridden from command line
@@ -115,6 +116,7 @@ echo "  - Learning rate: $LEARNING_RATE"
 echo "  - Scheduler: $SCHEDULER_TYPE"
 echo "  - Batch size: $BATCH_SIZE"
 echo "  - Gradient clip norm: $GRAD_CLIP_NORM"
+echo "  - Validation ratio: $VAL_RATIO"
 echo "  - Epochs: $EPOCHS"
 echo "=========================================="
 
@@ -201,6 +203,7 @@ TRAIN_CMD="$PYTHON_ENV train_gfno_2d_planes.py \
     --results-dir $EXPERIMENT_DIR \
     --epochs $EPOCHS \
     --batch-size $BATCH_SIZE \
+    --val-ratio $VAL_RATIO \
     --save-checkpoint-every $CHECKPOINT_EVERY \
     --learning-rate $LEARNING_RATE \
     --lr-gamma $LR_GAMMA \
