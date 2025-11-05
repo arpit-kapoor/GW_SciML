@@ -77,6 +77,10 @@ def setup_arguments():
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use for inference (cuda, cpu, or auto)')
     
+    # Visualization options
+    parser.add_argument('--create-3d-plots', action='store_true', default=False,
+                       help='Create 3D scatter plots and videos (disabled by default to save time/storage)')
+    
     args = parser.parse_args()
     
     # Construct full paths
@@ -309,6 +313,10 @@ def reshape_multi_col_predictions(predictions, output_window_size, n_target_cols
     """
     Reshape concatenated predictions to separate target columns.
     
+    The dataset concatenates data as: [t0_var0, t0_var1, t1_var0, t1_var1, t2_var0, t2_var1, ...]
+    This is because _concat_sequence does: seq.reshape(n_points, -1) on [n_points, window_size, n_target_cols]
+    which flattens in row-major order, interleaving timesteps and variables.
+    
     Args:
         predictions: Array of shape [N_samples, N_points, output_window_size * n_target_cols]
         output_window_size: Number of timesteps
@@ -318,16 +326,15 @@ def reshape_multi_col_predictions(predictions, output_window_size, n_target_cols
         Array of shape [N_samples, N_points, output_window_size, n_target_cols]
     """
     n_samples, n_points, total_size = predictions.shape
-    # First reshape to separate timesteps for each target column
     # From [N_samples, N_points, T*C] to [N_samples, N_points, T, C]
     # where T = output_window_size and C = n_target_cols
     if total_size != output_window_size * n_target_cols:
         raise ValueError(f"Expected total size {output_window_size * n_target_cols} (output_window_size={output_window_size} * n_target_cols={n_target_cols}), but got {total_size}")
     
-    # Reshape by first separating the timesteps for each target column
-    intermediate = predictions.reshape(n_samples, n_points, n_target_cols, output_window_size)
-    # Then transpose to get the desired order
-    reshaped = intermediate.transpose(0, 1, 3, 2)
+    # The data is stored as [t0_v0, t0_v1, t1_v0, t1_v1, ...] for each point
+    # So we reshape to [N_samples, N_points, output_window_size, n_target_cols] directly
+    # This naturally deinterleaves the timesteps and variables
+    reshaped = predictions.reshape(n_samples, n_points, output_window_size, n_target_cols)
     return reshaped
 
 
@@ -467,11 +474,29 @@ def create_visualizations(results_dict, args):
     """Create visualizations comparing predictions vs observations for multi-column predictions."""
     print("Creating visualizations...")
     
-    # Use validation data for visualization
-    predictions = results_dict['val']['predictions']  # [N_samples, N_points, output_window_size, n_target_cols]
-    targets = results_dict['val']['targets']
-    coords_data = results_dict['val']['coords']
+    # Create visualizations for both train and val datasets
+    for dataset_name in ['train', 'val']:
+        print(f"\n{'='*60}")
+        print(f"Creating visualizations for {dataset_name} dataset...")
+        print(f"{'='*60}")
+        
+        # Create dataset-specific directory
+        dataset_dir = os.path.join(args.results_dir, dataset_name)
+        os.makedirs(dataset_dir, exist_ok=True)
+        
+        # Get data for this dataset
+        predictions = results_dict[dataset_name]['predictions']  # [N_samples, N_points, output_window_size, n_target_cols]
+        targets = results_dict[dataset_name]['targets']
+        coords_data = results_dict[dataset_name]['coords']
+        
+        # Create visualizations for this dataset
+        create_dataset_visualizations(predictions, targets, coords_data, dataset_name, dataset_dir, args)
     
+    print(f"\nAll visualizations saved to: {args.results_dir}")
+
+
+def create_dataset_visualizations(predictions, targets, coords_data, dataset_name, dataset_dir, args):
+    """Create visualizations for a specific dataset (train or val)."""
     n_ts, n_nodes, output_window_size, n_target_cols = predictions.shape
 
     # Identify node indices with least to highest variance in each target column
@@ -506,25 +531,28 @@ def create_visualizations(results_dict, args):
 
     # # Create scatter plots for first timestep of each target column (stacked as rows)
     # print("Creating combined first-timestep scatter plots...")
-    # create_first_timestep_scatter_plots(predictions, targets, args)
+    # create_first_timestep_scatter_plots(predictions, targets, dataset_dir, args)
     
-    # Create combined 3D scatter plots for all target columns
-    print("Creating combined 3D scatter plots for all target columns...")
-    create_combined_3d_scatter_plots(predictions, targets, coords_data, args)
-    
-    # Create video from combined 3D scatter plots
-    create_video_from_combined_scatter_plots(args)
+    # Create combined 3D scatter plots for all target columns (if enabled)
+    if args.create_3d_plots:
+        print(f"Creating combined 3D scatter plots for {dataset_name}...")
+        create_combined_3d_scatter_plots(predictions, targets, coords_data, dataset_dir, args)
+        
+        # Create video from combined 3D scatter plots
+        create_video_from_combined_scatter_plots(dataset_dir, args)
+    else:
+        print(f"Skipping 3D scatter plots for {dataset_name} (disabled via --create-3d-plots flag)")
     
     # Create per-column analyses
     for col_idx, col_name in enumerate(args.target_cols):
-        print(f"Creating visualizations for {col_name}...")
+        print(f"Creating visualizations for {col_name} ({dataset_name})...")
         
         # Extract predictions and targets for this column
         col_predictions = predictions[:, :, :, col_idx]  # [N_samples, N_points, output_window_size]
         col_targets = targets[:, :, :, col_idx]
         
         # Create column-specific directory
-        col_dir = os.path.join(args.results_dir, col_name)
+        col_dir = os.path.join(dataset_dir, col_name)
         os.makedirs(col_dir, exist_ok=True)
         
         # Create scatter plots at different timesteps
@@ -540,9 +568,9 @@ def create_visualizations(results_dict, args):
         errors = col_predictions - col_targets
         mae = np.mean(np.abs(errors))
         rmse = np.sqrt(np.mean(errors**2))
-        print(f"{col_name} - Overall MAE: {mae:.4f}, RMSE: {rmse:.4f}")
+        print(f"{col_name} ({dataset_name}) - Overall MAE: {mae:.4f}, RMSE: {rmse:.4f}")
     
-    print(f"Visualizations saved to: {args.results_dir}")
+    print(f"Visualizations for {dataset_name} saved to: {dataset_dir}")
 
 
 def create_first_timestep_scatter_plots(predictions, targets, args):
@@ -638,13 +666,70 @@ def create_timestep_scatter_plots(predictions, targets, col_name, col_dir, args)
 
 
 def create_time_series_plots(predictions, targets, col_name, col_dir, selected_node_idx, args):
-    """Create time series plots for a single column."""
-    # n_samples_to_plot = min(5, predictions.shape[1])
-    # sample_indices = np.random.choice(predictions.shape[1], n_samples_to_plot, replace=False)
-
+    """
+    Create time series plots for a single column.
+    
+    Plots all timesteps in the prediction horizon for each selected sample.
+    Saves individual PNG files for each selected node/sample.
+    
+    Args:
+        predictions: Array of shape [N_samples, N_points, output_window_size]
+        targets: Array of shape [N_samples, N_points, output_window_size]
+        col_name: Name of the target column
+        col_dir: Directory to save plots
+        selected_node_idx: Array of selected node indices
+        args: Argument namespace
+    """
     n_samples_to_plot = selected_node_idx.shape[0]
     sample_indices = selected_node_idx
+    output_window_size = predictions.shape[2]
     
+    # Create directory for time series plots
+    timeseries_dir = os.path.join(col_dir, 'time_series_plots')
+    os.makedirs(timeseries_dir, exist_ok=True)
+    
+    # Iterate over all timesteps in the prediction horizon
+    for timestep_idx in range(output_window_size):
+        # Create a figure with subplots for all selected samples
+        fig, axes = plt.subplots(n_samples_to_plot, 1, figsize=(12, 3*n_samples_to_plot))
+        
+        if n_samples_to_plot == 1:
+            axes = [axes]
+        
+        for axes_idx, sample_idx in enumerate(sample_indices):
+            ax = axes[axes_idx]
+            
+            # Get values at this specific timestep for this sample/node across all samples
+            # predictions shape: [N_samples, N_points, output_window_size]
+            pred_at_timestep = predictions[:, sample_idx, timestep_idx]  # [N_samples]
+            target_at_timestep = targets[:, sample_idx, timestep_idx]  # [N_samples]
+
+            # Create time array
+            timesteps = np.arange(len(pred_at_timestep))
+            ax.plot(timesteps, pred_at_timestep, 'r--', label='Predicted', linewidth=2)
+            ax.plot(timesteps, target_at_timestep, 'b-', label='Observed', linewidth=2)
+            ax.set_xlabel('Simulation Time-step', fontsize=10)
+            ax.legend(fontsize=9)
+            
+            # Calculate MAE at this timestep
+            mae = np.mean(np.abs(pred_at_timestep - target_at_timestep))
+            
+            ax.set_ylabel(f'{col_name}', fontsize=10)
+            ax.set_title(f'Node {sample_idx} - Timestep {timestep_idx+1}/{output_window_size}\n' + 
+                        f'MAE: {mae:.4f}', fontsize=10)
+            ax.grid(True, alpha=0.3, axis='y')
+        
+        plt.tight_layout()
+        
+        # Save individual timestep plot
+        timestep_filename = f'timeseries_t{timestep_idx+1:02d}.png'
+        plt.savefig(os.path.join(timeseries_dir, timestep_filename), 
+                    dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    print(f"  Saved {output_window_size} time series plots to: {timeseries_dir}")
+    
+    # Also create a combined overview plot showing all timesteps for all selected nodes
     fig, axes = plt.subplots(n_samples_to_plot, 1, figsize=(12, 3*n_samples_to_plot))
     
     if n_samples_to_plot == 1:
@@ -653,23 +738,33 @@ def create_time_series_plots(predictions, targets, col_name, col_dir, selected_n
     for axes_idx, sample_idx in enumerate(sample_indices):
         ax = axes[axes_idx]
         
-        # Average across all points for each timestep
-        pred_timeseries = predictions[:, sample_idx, 0]  # [output_window_size]
-        target_timeseries = targets[:, sample_idx, 0]
+        # Get full time series for this sample/node
+        pred_timeseries = predictions[:, sample_idx, :]  # [N_samples, output_window_size]
+        target_timeseries = targets[:, sample_idx, :]
         
-        timesteps = np.arange(len(pred_timeseries))
+        # Take mean across all samples
+        pred_mean = np.mean(pred_timeseries, axis=0)  # [output_window_size]
+        target_mean = np.mean(target_timeseries, axis=0)
         
-        ax.plot(timesteps, target_timeseries, 'b-', label='Observed', linewidth=2)
-        ax.plot(timesteps, pred_timeseries, 'r--', label='Predicted', linewidth=2)
+        timesteps = np.arange(output_window_size)
         
-        ax.set_xlabel('Timestep')
-        ax.set_ylabel(f'{col_name} (spatial mean)')
-        ax.set_title(f'Time Series Comparison - Sample {sample_idx+1}')
-        ax.legend()
+        # Plot without error bands
+        ax.plot(timesteps, target_mean, 'b-', label='Observed', linewidth=2, marker='o')
+        ax.plot(timesteps, pred_mean, 'r--', label='Predicted', linewidth=2, marker='s')
+        
+        # Calculate overall correlation and MAE
+        corr = np.corrcoef(target_mean, pred_mean)[0, 1]
+        mae = np.mean(np.abs(pred_mean - target_mean))
+        
+        ax.set_xlabel('Timestep', fontsize=10)
+        ax.set_ylabel(f'{col_name}', fontsize=10)
+        ax.set_title(f'Node {sample_idx} - Full Prediction Horizon\n' + 
+                    f'Corr: {corr:.3f}, MAE: {mae:.4f}', fontsize=10)
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(col_dir, 'time_series_comparison.png'), 
+    plt.savefig(os.path.join(col_dir, 'time_series_comparison_all.png'), 
                 dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -702,7 +797,7 @@ def create_error_analysis(predictions, targets, col_name, col_dir, args):
     plt.close()
 
 
-def create_combined_3d_scatter_plots(predictions, targets, coords_data, args):
+def create_combined_3d_scatter_plots(predictions, targets, coords_data, dataset_dir, args):
     """
     Create combined 3D scatter plots showing all target columns together.
     
@@ -714,13 +809,14 @@ def create_combined_3d_scatter_plots(predictions, targets, coords_data, args):
         predictions: Array of shape [N_samples, N_points, output_window_size, n_target_cols]
         targets: Array of shape [N_samples, N_points, output_window_size, n_target_cols]
         coords_data: Array of shape [N_samples, N_points, 3]
+        dataset_dir: Directory to save plots (train or val specific)
         args: Argument namespace
     """
     n_samples = predictions.shape[0]
     n_target_cols = predictions.shape[3]
     
     # Create directory for combined plots
-    combined_plots_dir = os.path.join(args.results_dir, 'combined_3d_scatter_plots')
+    combined_plots_dir = os.path.join(dataset_dir, 'combined_3d_scatter_plots')
     os.makedirs(combined_plots_dir, exist_ok=True)
     
     print(f"Creating combined 3D scatter plots for {n_samples} samples with {n_target_cols} target columns...")
@@ -793,12 +889,12 @@ def create_combined_3d_scatter_plots(predictions, targets, coords_data, args):
     print(f"Combined 3D scatter plots saved to: {combined_plots_dir}")
 
 
-def create_video_from_combined_scatter_plots(args):
+def create_video_from_combined_scatter_plots(dataset_dir, args):
     """Create a single video from combined 3D scatter plot images."""
     print("Creating video from combined 3D scatter plots...")
     
     # Path to the combined scatter plots directory
-    combined_plots_dir = os.path.join(args.results_dir, 'combined_3d_scatter_plots')
+    combined_plots_dir = os.path.join(dataset_dir, 'combined_3d_scatter_plots')
     
     # Check if directory exists
     if not os.path.exists(combined_plots_dir):
@@ -824,7 +920,7 @@ def create_video_from_combined_scatter_plots(args):
     
     # Define video parameters
     fps = 10
-    video_filename = os.path.join(args.results_dir, 'combined_3d_scatter_plots_video.mp4')
+    video_filename = os.path.join(dataset_dir, 'combined_3d_scatter_plots_video.mp4')
     
     # Create video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
