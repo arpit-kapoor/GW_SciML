@@ -470,7 +470,30 @@ def save_results(results_dict, args):
     print(f"Results saved to: {args.results_dir}")
 
 
-def create_visualizations(results_dict, args):
+def denormalize_observations(normalized_data, obs_transform, target_col_indices):
+    """
+    Denormalize observations back to original scale.
+    
+    Args:
+        normalized_data: Array of shape [N_samples, N_points, output_window_size, n_target_cols]
+        obs_transform: Normalize transform object with mean and std
+        target_col_indices: List of indices for target columns
+        
+    Returns:
+        Array in original scale with same shape
+    """
+    # Get mean and std for the target columns only
+    mean = obs_transform.mean[target_col_indices]  # [n_target_cols]
+    std = obs_transform.std[target_col_indices]    # [n_target_cols]
+    
+    # Denormalize: original = normalized * std + mean
+    # Broadcasting: mean and std will be applied to the last dimension
+    denormalized = normalized_data * std + mean
+    
+    return denormalized
+
+
+def create_visualizations(results_dict, args, obs_transform):
     """Create visualizations comparing predictions vs observations for multi-column predictions."""
     print("Creating visualizations...")
     
@@ -484,10 +507,18 @@ def create_visualizations(results_dict, args):
         dataset_dir = os.path.join(args.results_dir, dataset_name)
         os.makedirs(dataset_dir, exist_ok=True)
         
-        # Get data for this dataset
-        predictions = results_dict[dataset_name]['predictions']  # [N_samples, N_points, output_window_size, n_target_cols]
-        targets = results_dict[dataset_name]['targets']
+        # Get data for this dataset (in normalized scale)
+        predictions_norm = results_dict[dataset_name]['predictions']  # [N_samples, N_points, output_window_size, n_target_cols]
+        targets_norm = results_dict[dataset_name]['targets']
         coords_data = results_dict[dataset_name]['coords']
+        
+        # Denormalize to original scale for visualization
+        predictions = denormalize_observations(predictions_norm, obs_transform, args.target_col_indices)
+        targets = denormalize_observations(targets_norm, obs_transform, args.target_col_indices)
+        
+        print(f"Denormalized {dataset_name} predictions to original scale")
+        print(f"  Predictions range: [{predictions.min():.4f}, {predictions.max():.4f}]")
+        print(f"  Targets range: [{targets.min():.4f}, {targets.max():.4f}]")
         
         # Create visualizations for this dataset
         create_dataset_visualizations(predictions, targets, coords_data, dataset_name, dataset_dir, args)
@@ -1085,8 +1116,8 @@ def main():
     # Save results
     save_results(results_dict, args)
     
-    # Create visualizations
-    create_visualizations(results_dict, args)
+    # Create visualizations (pass obs_transform for denormalization)
+    create_visualizations(results_dict, args, obs_transform)
     
     print("Prediction generation and visualization complete!")
 
