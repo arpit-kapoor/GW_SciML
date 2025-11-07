@@ -36,6 +36,7 @@ RESULTS_BASE_DIR="${RESULTS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_
 PREDICTIONS_BASE_DIR="${PREDICTIONS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions}"
 PYTHON_ENV="/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python"
 BASE_DATA_DIR="/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density"
+PATCH_DATA_SUBDIR="${DATA_SUB_DIR:-filter_patch}"
 
 # Parameters (matching training configuration)
 BATCH_SIZE="${BATCH_SIZE:-128}"
@@ -152,6 +153,7 @@ CMD="$PYTHON_ENV generate_gino_predictions_multi_col.py \
     --model-path \"$MODEL_PATH\" \
     --base-data-dir \"$BASE_DATA_DIR\" \
     --results-dir \"$PREDICTIONS_DIR\" \
+    --patch-data-subdir \"$PATCH_DATA_SUBDIR\" \
     --target-cols \"$TARGET_COLS\" \
     --input-window-size \"$INPUT_WINDOW\" \
     --output-window-size \"$OUTPUT_WINDOW\" \

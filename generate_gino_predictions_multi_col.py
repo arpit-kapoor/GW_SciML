@@ -482,12 +482,21 @@ def denormalize_observations(normalized_data, obs_transform, target_col_indices)
     Returns:
         Array in original scale with same shape
     """
-    # Get mean and std for the target columns only
-    mean = obs_transform.mean[target_col_indices]  # [n_target_cols]
-    std = obs_transform.std[target_col_indices]    # [n_target_cols]
+    # Extract mean and std for target columns
+    mean = obs_transform.mean[target_col_indices]
+    std = obs_transform.std[target_col_indices]
+    
+    # Convert to numpy if they are tensors
+    if isinstance(mean, torch.Tensor):
+        mean = mean.cpu().numpy()
+    if isinstance(std, torch.Tensor):
+        std = std.cpu().numpy()
+    
+    # Reshape mean and std to broadcast correctly: [1, 1, 1, n_target_cols]
+    mean = mean.reshape(1, 1, 1, -1)
+    std = std.reshape(1, 1, 1, -1)
     
     # Denormalize: original = normalized * std + mean
-    # Broadcasting: mean and std will be applied to the last dimension
     denormalized = normalized_data * std + mean
     
     return denormalized
