@@ -441,23 +441,60 @@ def generate_predictions(model, dataset, args, dataset_name):
     }
 
 
-def save_results(results_dict, args):
+def save_results(results_dict, args, obs_transform, coord_transform):
     """Save predictions and metadata to files."""
     print("Saving results...")
     
-    # Save train results
-    np.save(os.path.join(args.results_dir, 'train_predictions.npy'), results_dict['train']['predictions'])
-    np.save(os.path.join(args.results_dir, 'train_targets.npy'), results_dict['train']['targets'])
+    # Denormalize observations (predictions and targets)
+    train_predictions_denorm = denormalize_observations(
+        results_dict['train']['predictions'], obs_transform, args.target_col_indices
+    )
+    train_targets_denorm = denormalize_observations(
+        results_dict['train']['targets'], obs_transform, args.target_col_indices
+    )
+    val_predictions_denorm = denormalize_observations(
+        results_dict['val']['predictions'], obs_transform, args.target_col_indices
+    )
+    val_targets_denorm = denormalize_observations(
+        results_dict['val']['targets'], obs_transform, args.target_col_indices
+    )
     
-    # Save validation results
-    np.save(os.path.join(args.results_dir, 'val_predictions.npy'), results_dict['val']['predictions'])
-    np.save(os.path.join(args.results_dir, 'val_targets.npy'), results_dict['val']['targets'])
+    # Denormalize coordinates
+    # coords shape: [N_samples, N_points, 3]
+    train_coords = results_dict['train']['coords']
+    val_coords = results_dict['val']['coords']
     
-    # Save coordinates
+    # Extract mean and std for coordinates
+    coord_mean = coord_transform.mean
+    coord_std = coord_transform.std
+    
+    # Convert to numpy if they are tensors
+    if isinstance(coord_mean, torch.Tensor):
+        coord_mean = coord_mean.cpu().numpy()
+    if isinstance(coord_std, torch.Tensor):
+        coord_std = coord_std.cpu().numpy()
+    
+    # Reshape for broadcasting: [1, 1, 3]
+    coord_mean = coord_mean.reshape(1, 1, -1)
+    coord_std = coord_std.reshape(1, 1, -1)
+    
+    # Denormalize: original = normalized * std + mean
+    train_coords_denorm = train_coords * coord_std + coord_mean
+    val_coords_denorm = val_coords * coord_std + coord_mean
+    
+    # Save train results (denormalized)
+    np.save(os.path.join(args.results_dir, 'train_predictions.npy'), train_predictions_denorm)
+    np.save(os.path.join(args.results_dir, 'train_targets.npy'), train_targets_denorm)
+    
+    # Save validation results (denormalized)
+    np.save(os.path.join(args.results_dir, 'val_predictions.npy'), val_predictions_denorm)
+    np.save(os.path.join(args.results_dir, 'val_targets.npy'), val_targets_denorm)
+    
+    # Save coordinates (denormalized)
     with open(os.path.join(args.results_dir, 'train_coords.pkl'), 'wb') as f:
-        pickle.dump(results_dict['train']['coords'], f)
+        pickle.dump(train_coords_denorm, f)
     with open(os.path.join(args.results_dir, 'val_coords.pkl'), 'wb') as f:
-        pickle.dump(results_dict['val']['coords'], f)
+        pickle.dump(val_coords_denorm, f)
     
     # Save metadata
     with open(os.path.join(args.results_dir, 'metadata.pkl'), 'wb') as f:
@@ -467,7 +504,7 @@ def save_results(results_dict, args):
             'args': vars(args)
         }, f)
     
-    print(f"Results saved to: {args.results_dir}")
+    print(f"Results saved to: {args.results_dir} (denormalized)")
 
 
 def denormalize_observations(normalized_data, obs_transform, target_col_indices):
@@ -492,14 +529,103 @@ def denormalize_observations(normalized_data, obs_transform, target_col_indices)
     if isinstance(std, torch.Tensor):
         std = std.cpu().numpy()
     
-    # Reshape mean and std to broadcast correctly: [1, 1, 1, n_target_cols]
-    mean = mean.reshape(1, 1, 1, -1)
-    std = std.reshape(1, 1, 1, -1)
+    # print(f"Denormalizing with mean: {mean}, std: {std}")
+    # print(f"Mean shape: {mean.shape}, Std shape: {std.shape}")
+    # print(f"Normalized data shape: {normalized_data.shape}")
+    
+    # # Reshape mean and std to broadcast correctly: [1, 1, 1, n_target_cols]
+    # mean = mean.reshape(1, 1, 1, -1)
+    # std = std.reshape(1, 1, 1, -1)
     
     # Denormalize: original = normalized * std + mean
     denormalized = normalized_data * std + mean
     
     return denormalized
+
+
+def compute_metrics(results_dict, args, obs_transform):
+    """
+    Compute L2 loss and R2 score for each target column on train and val sets.
+    
+    Args:
+        results_dict: Dictionary containing train and val predictions and targets
+        args: Argument namespace
+        obs_transform: Normalize transform object for denormalization
+        
+    Returns:
+        Dictionary containing metrics for each dataset and target column
+    """
+    from sklearn.metrics import r2_score, mean_absolute_error
+    
+    metrics = {}
+    
+    for dataset_name in ['train', 'val']:
+        # Get normalized data
+        predictions_norm = results_dict[dataset_name]['predictions']  # [N_samples, N_points, output_window_size, n_target_cols]
+        targets_norm = results_dict[dataset_name]['targets']
+        
+        # Denormalize to original scale
+        predictions = denormalize_observations(predictions_norm, obs_transform, args.target_col_indices)
+        targets = denormalize_observations(targets_norm, obs_transform, args.target_col_indices)
+        
+        metrics[dataset_name] = {}
+        
+        # Compute metrics for each target column
+        for col_idx, col_name in enumerate(args.target_cols):
+            print(f"Computing metrics for {col_name} ({dataset_name})...")
+            col_predictions = predictions[:, :, :, col_idx]  # [N_samples, N_points, output_window_size]
+            col_targets = targets[:, :, :, col_idx]
+            
+            # Flatten for metric computation
+            col_predictions_flat = col_predictions.flatten()
+            col_targets_flat = col_targets.flatten()
+            
+            # Compute L2 loss (Mean Squared Error)
+            mae_loss = mean_absolute_error(col_targets_flat, col_predictions_flat)
+            
+            # Compute R2 score
+            r2 = r2_score(col_targets_flat, col_predictions_flat)
+            
+            metrics[dataset_name][col_name] = {
+                'mae_loss': mae_loss,
+                'r2_score': r2
+            }
+    
+    return metrics
+
+
+def save_metrics(metrics, args):
+    """
+    Save computed metrics to a text file.
+    
+    Args:
+        metrics: Dictionary containing metrics for each dataset and target column
+        args: Argument namespace
+    """
+    metrics_file = os.path.join(args.results_dir, 'metrics.txt')
+    
+    with open(metrics_file, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write("Model Performance Metrics\n")
+        f.write("=" * 80 + "\n\n")
+        
+        for dataset_name in ['train', 'val']:
+            f.write(f"\n{dataset_name.upper()} SET\n")
+            f.write("-" * 80 + "\n")
+            
+            for col_name in args.target_cols:
+                mae_loss = metrics[dataset_name][col_name]['mae_loss']
+                r2_score = metrics[dataset_name][col_name]['r2_score']
+                
+                f.write(f"\n{col_name}:\n")
+                f.write(f"  MAE Loss: {mae_loss:.6f}\n")
+                f.write(f"  R2 Score:      {r2_score:.6f}\n")
+            
+            f.write("\n")
+        
+        f.write("=" * 80 + "\n")
+    
+    print(f"Metrics saved to: {metrics_file}")
 
 
 def create_visualizations(results_dict, args, obs_transform):
@@ -544,29 +670,45 @@ def create_dataset_visualizations(predictions, targets, coords_data, dataset_nam
     node_variance = np.var(predictions[:, :, 0, :], axis=0)
     print(f"Node variance shape: {node_variance.shape}")
 
-    # node_variance has shape [n_nodes, n_target_cols]
-    # Compute percentiles along the node dimension
-    p5 = np.percentile(node_variance, 5, axis=0)
-    p25 = np.percentile(node_variance, 25, axis=0)
-    p50 = np.percentile(node_variance, 50, axis=0)
-    p75 = np.percentile(node_variance, 75, axis=0)
-    p95 = np.percentile(node_variance, 95, axis=0)
+    # # node_variance has shape [n_nodes, n_target_cols]
+    # # Compute percentiles along the node dimension
+    # p5 = np.percentile(node_variance, 5, axis=0)
+    # p25 = np.percentile(node_variance, 25, axis=0)
+    # p50 = np.percentile(node_variance, 50, axis=0)
+    # p75 = np.percentile(node_variance, 75, axis=0)
+    # p95 = np.percentile(node_variance, 95, axis=0)
 
-    # Compute absolute differences from these percentile values
-    diff_5 = np.abs(node_variance - p5)
-    diff_25 = np.abs(node_variance - p25)
-    diff_50 = np.abs(node_variance - p50)
-    diff_75 = np.abs(node_variance - p75)
-    diff_95 = np.abs(node_variance - p95)
+    # # Compute absolute differences from these percentile values
+    # diff_5 = np.abs(node_variance - p5)
+    # diff_25 = np.abs(node_variance - p25)
+    # diff_50 = np.abs(node_variance - p50)
+    # diff_75 = np.abs(node_variance - p75)
+    # diff_95 = np.abs(node_variance - p95)
 
-    # Find indices (along nodes) that are closest to each percentile per target column
-    idx_5 = np.argmin(diff_5, axis=0)
-    idx_25 = np.argmin(diff_25, axis=0)
-    idx_50 = np.argmin(diff_50, axis=0)
-    idx_75 = np.argmin(diff_75, axis=0)
-    idx_95 = np.argmin(diff_95, axis=0)
+    # # Find indices (along nodes) that are closest to each percentile per target column
+    # idx_5 = np.argmin(diff_5, axis=0)
+    # idx_25 = np.argmin(diff_25, axis=0)
+    # idx_50 = np.argmin(diff_50, axis=0)
+    # idx_75 = np.argmin(diff_75, axis=0)
+    # idx_95 = np.argmin(diff_95, axis=0)
 
-    selected_node_idx = np.stack([idx_5, idx_25, idx_50, idx_75, idx_95], axis=0)
+    # selected_node_idx = np.stack([idx_5, idx_25, idx_50, idx_75, idx_95], axis=0)
+
+    # Alternatively, select nodes at specific percentiles directly
+    p98 = np.percentile(node_variance, 98, axis=0)
+    selected_node_idx = []
+    for col_idx, col_name in enumerate(args.target_cols):
+        print(f"{col_name} - 98th percentile variance: {p98[col_idx]:.6f}")
+        # Identify nodes above 98th percentile for this column
+        node_idx_above_p98 = np.where(node_variance[:, col_idx] >= p98[col_idx])[0]
+        print(f"{col_name} - Number of nodes above 98th percentile: {len(node_idx_above_p98)}")
+
+        # Randomly select 5 nodes from those above 98th percentile for each target column
+        # np.random.seed(42)  # For reproducibility
+        selected_node_idx.append(np.random.choice(node_idx_above_p98, size=(5, 1), replace=False))
+    
+    selected_node_idx = np.hstack(selected_node_idx)  # Shape: [5, n_target_cols]
+
     print(f"Selected nodes shape: {selected_node_idx.shape}")
 
     # # Create scatter plots for first timestep of each target column (stacked as rows)
@@ -596,7 +738,7 @@ def create_dataset_visualizations(predictions, targets, coords_data, dataset_nam
         os.makedirs(col_dir, exist_ok=True)
         
         # Create scatter plots at different timesteps
-        create_timestep_scatter_plots(col_predictions, col_targets, col_name, col_dir, args)
+        create_timestep_scatter_plots(col_predictions, col_targets, col_name, col_dir, selected_node_idx[:, col_idx], args)
         
         # Create time series plots
         create_time_series_plots(col_predictions, col_targets, col_name, col_dir, selected_node_idx[:, col_idx], args)
@@ -651,13 +793,14 @@ def create_first_timestep_scatter_plots(predictions, targets, args):
             # Calculate correlation
             correlation = np.corrcoef(target_t0, pred_t0)[0, 1]
             
-            ax.set_xlabel('Observed')
-            ax.set_ylabel('Predicted')
-            ax.set_title(f'{col_name}\nSample {sample_idx+1}, t=1\nCorr: {correlation:.3f}')
+            ax.set_xlabel('Observed', fontsize=20)
+            ax.set_ylabel('Predicted', fontsize=20)
+            ax.set_title(f'{col_name}\nSample {sample_idx+1}, t=1\nCorr: {correlation:.3f}', fontsize=20)
+            ax.tick_params(axis='both', which='major', labelsize=16)
             ax.grid(True, alpha=0.3)
             
             if sample_idx == 0 and col_idx == 0:
-                ax.legend()
+                ax.legend(fontsize=18)
     
     plt.tight_layout()
     plt.savefig(os.path.join(args.results_dir, 'first_timestep_all_columns.png'), 
@@ -665,10 +808,11 @@ def create_first_timestep_scatter_plots(predictions, targets, args):
     plt.close()
 
 
-def create_timestep_scatter_plots(predictions, targets, col_name, col_dir, args):
+def create_timestep_scatter_plots(predictions, targets, col_name, col_dir, selected_node_idx, args):
     """Create scatter plots at different timesteps for a single column."""
     timesteps_to_plot = [0, predictions.shape[2]//2, predictions.shape[2]-1]  # First, middle, last
-    n_samples_to_plot = min(5, predictions.shape[0])
+    n_samples_to_plot = selected_node_idx.shape[0]
+    sample_indices = selected_node_idx
     
     fig, axes = plt.subplots(n_samples_to_plot, len(timesteps_to_plot), 
                             figsize=(20, 4*n_samples_to_plot))
@@ -676,14 +820,14 @@ def create_timestep_scatter_plots(predictions, targets, col_name, col_dir, args)
     if n_samples_to_plot == 1:
         axes = axes.reshape(1, -1)
     
-    for sample_idx in range(n_samples_to_plot):
+    for axes_idx, sample_idx in enumerate(sample_indices):
         for plot_idx, timestep in enumerate(timesteps_to_plot):
-            ax = axes[sample_idx, plot_idx]
+            ax = axes[axes_idx, plot_idx]
             
-            pred_t = predictions[sample_idx, :, timestep]
-            target_t = targets[sample_idx, :, timestep]
+            pred_t = predictions[:, sample_idx, timestep]
+            target_t = targets[:, sample_idx, timestep]
             
-            ax.scatter(target_t, pred_t, alpha=0.6, s=1)
+            ax.scatter(target_t, pred_t, alpha=0.6, s=2)
             
             min_val = min(target_t.min(), pred_t.min())
             max_val = max(target_t.max(), pred_t.max())
@@ -691,13 +835,14 @@ def create_timestep_scatter_plots(predictions, targets, col_name, col_dir, args)
             
             correlation = np.corrcoef(target_t, pred_t)[0, 1]
             
-            ax.set_xlabel('Observed')
-            ax.set_ylabel('Predicted')
-            ax.set_title(f'Sample {sample_idx+1}, Timestep {timestep+1}\nCorr: {correlation:.3f}')
+            ax.set_xlabel('Observed', fontsize=20)
+            ax.set_ylabel('Predicted', fontsize=20)
+            ax.set_title(f'Node {sample_idx}, Timestep {timestep+1}\nCorr: {correlation:.3f}', fontsize=20)
+            ax.tick_params(axis='both', which='major', labelsize=16)
             ax.grid(True, alpha=0.3)
             
-            if sample_idx == 0 and plot_idx == 0:
-                ax.legend()
+            if axes_idx == 0 and plot_idx == 0:
+                ax.legend(fontsize=18)
     
     plt.tight_layout()
     plt.savefig(os.path.join(col_dir, 'predictions_vs_observations.png'), 
@@ -748,15 +893,16 @@ def create_time_series_plots(predictions, targets, col_name, col_dir, selected_n
             timesteps = np.arange(len(pred_at_timestep))
             ax.plot(timesteps, pred_at_timestep, 'r--', label='Predicted', linewidth=2)
             ax.plot(timesteps, target_at_timestep, 'b-', label='Observed', linewidth=2)
-            ax.set_xlabel('Simulation Time-step', fontsize=10)
-            ax.legend(fontsize=9)
+            ax.set_xlabel('Simulation Time-step', fontsize=20)
+            ax.tick_params(axis='both', which='major', labelsize=16)
+            ax.legend(fontsize=18)
             
             # Calculate MAE at this timestep
             mae = np.mean(np.abs(pred_at_timestep - target_at_timestep))
             
-            ax.set_ylabel(f'{col_name}', fontsize=10)
+            ax.set_ylabel(f'{col_name}', fontsize=20)
             ax.set_title(f'Node {sample_idx} - Timestep {timestep_idx+1}/{output_window_size}\n' + 
-                        f'MAE: {mae:.4f}', fontsize=10)
+                        f'MAE: {mae:.4f}', fontsize=20)
             ax.grid(True, alpha=0.3, axis='y')
         
         plt.tight_layout()
@@ -796,11 +942,12 @@ def create_time_series_plots(predictions, targets, col_name, col_dir, selected_n
         corr = np.corrcoef(target_mean, pred_mean)[0, 1]
         mae = np.mean(np.abs(pred_mean - target_mean))
         
-        ax.set_xlabel('Timestep', fontsize=10)
-        ax.set_ylabel(f'{col_name}', fontsize=10)
+        ax.set_xlabel('Timestep', fontsize=20)
+        ax.set_ylabel(f'{col_name}', fontsize=20)
         ax.set_title(f'Node {sample_idx} - Full Prediction Horizon\n' + 
-                    f'Corr: {corr:.3f}, MAE: {mae:.4f}', fontsize=10)
-        ax.legend(fontsize=9)
+                    f'Corr: {corr:.3f}, MAE: {mae:.4f}', fontsize=20)
+        ax.tick_params(axis='both', which='major', labelsize=16)
+        ax.legend(fontsize=18)
         ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -820,15 +967,17 @@ def create_error_analysis(predictions, targets, col_name, col_dir, args):
     timesteps = np.arange(len(mae_by_timestep))
     
     ax1.plot(timesteps, mae_by_timestep, 'b-', marker='o', linewidth=2)
-    ax1.set_xlabel('Timestep')
-    ax1.set_ylabel('Mean Absolute Error')
-    ax1.set_title(f'{col_name} - MAE by Timestep')
+    ax1.set_xlabel('Timestep', fontsize=20)
+    ax1.set_ylabel('Mean Absolute Error', fontsize=20)
+    ax1.set_title(f'{col_name} - MAE by Timestep', fontsize=20)
+    ax1.tick_params(axis='both', which='major', labelsize=16)
     ax1.grid(True, alpha=0.3)
     
     ax2.plot(timesteps, rmse_by_timestep, 'r-', marker='s', linewidth=2)
-    ax2.set_xlabel('Timestep')
-    ax2.set_ylabel('Root Mean Square Error')
-    ax2.set_title(f'{col_name} - RMSE by Timestep')
+    ax2.set_xlabel('Timestep', fontsize=20)
+    ax2.set_ylabel('Root Mean Square Error', fontsize=20)
+    ax2.set_title(f'{col_name} - RMSE by Timestep', fontsize=20)
+    ax2.tick_params(axis='both', which='major', labelsize=16)
     ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -1122,8 +1271,13 @@ def main():
         'val': val_results
     }
     
-    # Save results
-    save_results(results_dict, args)
+    # Save results (with denormalization)
+    save_results(results_dict, args, obs_transform, coord_transform)
+    
+    # Compute and save metrics
+    print("\nComputing metrics...")
+    metrics = compute_metrics(results_dict, args, obs_transform)
+    save_metrics(metrics, args)
     
     # Create visualizations (pass obs_transform for denormalization)
     create_visualizations(results_dict, args, obs_transform)
