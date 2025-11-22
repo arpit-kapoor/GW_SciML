@@ -695,17 +695,17 @@ def create_dataset_visualizations(predictions, targets, coords_data, dataset_nam
     # selected_node_idx = np.stack([idx_5, idx_25, idx_50, idx_75, idx_95], axis=0)
 
     # Alternatively, select nodes at specific percentiles directly
-    p98 = np.percentile(node_variance, 98, axis=0)
+    p99 = np.percentile(node_variance, 99, axis=0)
     selected_node_idx = []
     for col_idx, col_name in enumerate(args.target_cols):
-        print(f"{col_name} - 98th percentile variance: {p98[col_idx]:.6f}")
-        # Identify nodes above 98th percentile for this column
-        node_idx_above_p98 = np.where(node_variance[:, col_idx] >= p98[col_idx])[0]
-        print(f"{col_name} - Number of nodes above 98th percentile: {len(node_idx_above_p98)}")
+        print(f"{col_name} - 99th percentile variance: {p99[col_idx]:.6f}")
+        # Identify nodes above 99th percentile for this column
+        node_idx_above_p99 = np.where(node_variance[:, col_idx] >= p99[col_idx])[0]
+        print(f"{col_name} - Number of nodes above 99th percentile: {len(node_idx_above_p99)}")
 
-        # Randomly select 5 nodes from those above 98th percentile for each target column
+        # Randomly select 5 nodes from those above 99th percentile for each target column
         # np.random.seed(42)  # For reproducibility
-        selected_node_idx.append(np.random.choice(node_idx_above_p98, size=(5, 1), replace=False))
+        selected_node_idx.append(np.random.choice(node_idx_above_p99, size=(5, 1), replace=False))
     
     selected_node_idx = np.hstack(selected_node_idx)  # Shape: [5, n_target_cols]
 
@@ -914,46 +914,6 @@ def create_time_series_plots(predictions, targets, col_name, col_dir, selected_n
         plt.close()
     
     print(f"  Saved {output_window_size} time series plots to: {timeseries_dir}")
-    
-    # Also create a combined overview plot showing all timesteps for all selected nodes
-    fig, axes = plt.subplots(n_samples_to_plot, 1, figsize=(12, 3*n_samples_to_plot))
-    
-    if n_samples_to_plot == 1:
-        axes = [axes]
-    
-    for axes_idx, sample_idx in enumerate(sample_indices):
-        ax = axes[axes_idx]
-        
-        # Get full time series for this sample/node
-        pred_timeseries = predictions[:, sample_idx, :]  # [N_samples, output_window_size]
-        target_timeseries = targets[:, sample_idx, :]
-        
-        # Take mean across all samples
-        pred_mean = np.mean(pred_timeseries, axis=0)  # [output_window_size]
-        target_mean = np.mean(target_timeseries, axis=0)
-        
-        timesteps = np.arange(output_window_size)
-        
-        # Plot without error bands
-        ax.plot(timesteps, target_mean, 'b-', label='Observed', linewidth=2, marker='o')
-        ax.plot(timesteps, pred_mean, 'r--', label='Predicted', linewidth=2, marker='s')
-        
-        # Calculate overall correlation and MAE
-        corr = np.corrcoef(target_mean, pred_mean)[0, 1]
-        mae = np.mean(np.abs(pred_mean - target_mean))
-        
-        ax.set_xlabel('Timestep', fontsize=20)
-        ax.set_ylabel(f'{col_name}', fontsize=20)
-        ax.set_title(f'Node {sample_idx} - Full Prediction Horizon\n' + 
-                    f'Corr: {corr:.3f}, MAE: {mae:.4f}', fontsize=20)
-        ax.tick_params(axis='both', which='major', labelsize=16)
-        ax.legend(fontsize=18)
-        ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(col_dir, 'time_series_comparison_all.png'), 
-                dpi=300, bbox_inches='tight')
-    plt.close()
 
 
 def create_error_analysis(predictions, targets, col_name, col_dir, args):

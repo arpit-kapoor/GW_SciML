@@ -158,6 +158,14 @@ def setup_arguments():
     parser.add_argument('--save-checkpoint-every', type=int, default=5,
                        help='Save checkpoint every N epochs')
     
+    # Variance-aware loss parameters
+    parser.add_argument('--lambda-conc-focus', type=float, default=0.5,
+                       help='Lambda parameter to focus on concentration in variance-aware loss')
+    parser.add_argument('--var-aware-alpha', type=float, default=0.3,
+                       help='Alpha parameter for variance-aware loss')
+    parser.add_argument('--var-aware-beta', type=float, default=2.0,
+                       help='Beta parameter for variance-aware loss')
+    
     # Other parameters
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use for training (cuda, cpu, or auto)')
@@ -604,6 +612,8 @@ def evaluate_model_on_patches(val_loader, model, loss_fn, args):
     """
     model.eval()  # Set model to evaluation mode
     total_loss = 0.0
+    total_global_loss = 0.0
+    total_conc_var_loss = 0.0
     total_samples = 0
     
     with torch.no_grad():  # Disable gradient computation for efficiency
@@ -636,18 +646,20 @@ def evaluate_model_on_patches(val_loader, model, loss_fn, args):
             core_target = y[:, :core_len]
 
             # Compute loss on core points only
-            loss = loss_fn(core_output, core_target)
+            loss, global_loss, conc_var_loss = loss_fn(core_output, core_target)
             
             # Dynamically infer batch size for loss computation
             batch_size = x.shape[0]
             total_loss += loss.item() * batch_size
+            total_global_loss += global_loss.item() * batch_size
+            total_conc_var_loss += conc_var_loss.item() * batch_size
             total_samples += batch_size
 
     model.train()  # Return model to training mode
-    return total_loss / max(total_samples, 1)
+    return total_loss / max(total_samples, 1), total_global_loss / max(total_samples, 1), total_conc_var_loss / max(total_samples, 1)
 
 
-def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses, args, filename=None):
+def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses, args, filename=None):
     """Save a training checkpoint to enable resuming training.
     
     Args:
@@ -656,7 +668,11 @@ def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses
         scheduler: Learning rate scheduler state to save
         epoch: Current epoch number (0-indexed)
         train_losses: List of training losses up to current epoch
+        train_global_losses: List of training global losses up to current epoch
+        train_conc_var_losses: List of training concentration variance losses up to current epoch
         val_losses: List of validation losses up to current epoch
+        val_global_losses: List of validation global losses up to current epoch
+        val_conc_var_losses: List of validation concentration variance losses up to current epoch
         args: Argument namespace containing checkpoint directory
         filename: Optional custom filename for checkpoint
     """
@@ -672,7 +688,11 @@ def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'train_losses': train_losses,
+        'train_global_losses': train_global_losses,
+        'train_conc_var_losses': train_conc_var_losses,
         'val_losses': val_losses,
+        'val_global_losses': val_global_losses,
+        'val_conc_var_losses': val_conc_var_losses,
         'args': args,  # Save training configuration for compatibility checking
     }
     
@@ -686,13 +706,17 @@ def save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses
     
     # Save accumulated loss history for continuous training curves
     # Save both in results_dir and next to the checkpoint for better resumption
-    accumulated_train, accumulated_val = get_accumulated_losses(train_losses, val_losses, args, checkpoint_path)
+    accumulated_train, accumulated_train_global, accumulated_train_conc_var, accumulated_val, accumulated_val_global, accumulated_val_conc_var = get_accumulated_losses(train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses, args, checkpoint_path)
     
     # Also save loss history next to the checkpoint file
     checkpoint_loss_history = os.path.join(os.path.dirname(checkpoint_path), 'loss_history.json')
     loss_history = {
         'train_losses': accumulated_train,
+        'train_global_losses': accumulated_train_global,
+        'train_conc_var_losses': accumulated_train_conc_var,
         'val_losses': accumulated_val,
+        'val_global_losses': accumulated_val_global,
+        'val_conc_var_losses': accumulated_val_conc_var,
         'last_updated': dt.datetime.now().isoformat(),
         'total_epochs': len(accumulated_train),
         'checkpoint_file': os.path.basename(checkpoint_path)
@@ -713,7 +737,8 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler, args):
         args: Current argument namespace for compatibility checking
         
     Returns:
-        tuple: (start_epoch, train_losses, val_losses)
+        tuple: (start_epoch, train_losses, train_global_losses, train_conc_var_losses, 
+                val_losses, val_global_losses, val_conc_var_losses)
     """
     print(f"Loading checkpoint from: {checkpoint_path}")
     
@@ -739,12 +764,25 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler, args):
     # Get training progress
     start_epoch = checkpoint['epoch'] + 1  # Resume from next epoch
     train_losses = checkpoint.get('train_losses', [])
+    train_global_losses = checkpoint.get('train_global_losses', [])
+    train_conc_var_losses = checkpoint.get('train_conc_var_losses', [])
     val_losses = checkpoint.get('val_losses', [])
+    val_global_losses = checkpoint.get('val_global_losses', [])
+    val_conc_var_losses = checkpoint.get('val_conc_var_losses', [])
+    
+    # Backward compatibility: If old checkpoint doesn't have global/variance losses,
+    # pad them with None placeholders so we know which epochs are missing this data
+    if not train_global_losses and train_losses:
+        print("Note: Old checkpoint detected without global/variance losses. These will be tracked going forward.")
+        train_global_losses = [None] * len(train_losses)
+        train_conc_var_losses = [None] * len(train_losses)
+        val_global_losses = [None] * len(val_losses)
+        val_conc_var_losses = [None] * len(val_losses)
     
     print(f"Resuming training from epoch {start_epoch}")
     print(f"Loaded {len(train_losses)} training losses and {len(val_losses)} validation losses")
     
-    return start_epoch, train_losses, val_losses
+    return start_epoch, train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses
 
 
 def _validate_checkpoint_compatibility(saved_args, current_args):
@@ -774,14 +812,18 @@ def _validate_checkpoint_compatibility(saved_args, current_args):
     print("Checkpoint compatibility validated successfully")
 
 
-def save_loss_history(accumulated_train_losses, accumulated_val_losses, args):
+def save_loss_history(accumulated_train_losses, accumulated_train_global, accumulated_train_conc_var, accumulated_val_losses, accumulated_val_global, accumulated_val_conc_var, args):
     """Save training and validation loss history to a persistent JSON file.
     
     This function saves the complete accumulated history of losses across all training sessions.
     
     Args:
         accumulated_train_losses: Complete list of accumulated training losses
+        accumulated_train_global: Complete list of accumulated training global losses
+        accumulated_train_conc_var: Complete list of accumulated training concentration variance losses
         accumulated_val_losses: Complete list of accumulated validation losses
+        accumulated_val_global: Complete list of accumulated validation global losses
+        accumulated_val_conc_var: Complete list of accumulated validation concentration variance losses
         args: Argument namespace containing results directory
     """
     loss_history_path = os.path.join(args.results_dir, 'loss_history.json')
@@ -789,7 +831,11 @@ def save_loss_history(accumulated_train_losses, accumulated_val_losses, args):
     # Create loss history dictionary
     loss_history = {
         'train_losses': accumulated_train_losses,
+        'train_global_losses': accumulated_train_global,
+        'train_conc_var_losses': accumulated_train_conc_var,
         'val_losses': accumulated_val_losses,
+        'val_global_losses': accumulated_val_global,
+        'val_conc_var_losses': accumulated_val_conc_var,
         'last_updated': dt.datetime.now().isoformat(),
         'total_epochs': len(accumulated_train_losses)
     }
@@ -847,7 +893,7 @@ def load_loss_history(args, checkpoint_path=None):
     return {'train_losses': [], 'val_losses': [], 'total_epochs': 0}
 
 
-def get_accumulated_losses(train_losses, val_losses, args, checkpoint_path=None):
+def get_accumulated_losses(train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses, args, checkpoint_path=None):
     """Get accumulated losses from all training sessions.
     
     This function loads the persistent loss history and properly merges it with
@@ -857,7 +903,11 @@ def get_accumulated_losses(train_losses, val_losses, args, checkpoint_path=None)
     
     Args:
         train_losses: Current session's training losses
+        train_global_losses: Current session's training global losses
+        train_conc_var_losses: Current session's training concentration variance losses
         val_losses: Current session's validation losses  
+        val_global_losses: Current session's validation global losses
+        val_conc_var_losses: Current session's validation concentration variance losses
         args: Argument namespace containing results directory
         checkpoint_path: Optional path to checkpoint file being loaded when resuming
         
@@ -868,7 +918,11 @@ def get_accumulated_losses(train_losses, val_losses, args, checkpoint_path=None)
     # Load existing loss history, prioritizing checkpoint directory when resuming
     existing_history = load_loss_history(args, checkpoint_path)
     existing_train = existing_history.get('train_losses', [])
+    existing_train_global = existing_history.get('train_global_losses', [])
+    existing_train_conc_var = existing_history.get('train_conc_var_losses', [])
     existing_val = existing_history.get('val_losses', [])
+    existing_val_global = existing_history.get('val_global_losses', [])
+    existing_val_conc_var = existing_history.get('val_conc_var_losses', [])
     
     # Get the number of existing epochs
     existing_epoch_count = len(existing_train)
@@ -878,20 +932,39 @@ def get_accumulated_losses(train_losses, val_losses, args, checkpoint_path=None)
     if current_epoch_count > existing_epoch_count:
         # Extract only the new epochs that aren't in the existing history
         new_train_losses = train_losses[existing_epoch_count:]
+        new_train_global_losses = train_global_losses[existing_epoch_count:]
+        new_train_conc_var_losses = train_conc_var_losses[existing_epoch_count:]
+        
         new_val_losses = val_losses[existing_epoch_count:]
+        new_val_global_losses = val_global_losses[existing_epoch_count:]
+        new_val_conc_var_losses = val_conc_var_losses[existing_epoch_count:]
         
         # Merge existing with new
         accumulated_train = existing_train + new_train_losses
+        accumulated_train_global = existing_train_global + new_train_global_losses
+        accumulated_train_conc_var = existing_train_conc_var + new_train_conc_var_losses
         accumulated_val = existing_val + new_val_losses
+        accumulated_val_global = existing_val_global + new_val_global_losses
+        accumulated_val_conc_var = existing_val_conc_var + new_val_conc_var_losses
     else:
         # Current session has same or fewer epochs - use existing
         accumulated_train = existing_train
+        accumulated_train_global = existing_train_global
+        accumulated_train_conc_var = existing_train_conc_var
         accumulated_val = existing_val
+        accumulated_val_global = existing_val_global
+        accumulated_val_conc_var = existing_val_conc_var
     
-    return accumulated_train, accumulated_val
+    # Filter out None placeholders from old checkpoints (backward compatibility)
+    accumulated_train_global = [x for x in accumulated_train_global if x is not None]
+    accumulated_train_conc_var = [x for x in accumulated_train_conc_var if x is not None]
+    accumulated_val_global = [x for x in accumulated_val_global if x is not None]
+    accumulated_val_conc_var = [x for x in accumulated_val_conc_var if x is not None]
+    
+    return accumulated_train, accumulated_train_global, accumulated_train_conc_var, accumulated_val, accumulated_val_global, accumulated_val_conc_var
 
 
-def plot_training_curves(train_losses, val_losses, args):
+def plot_training_curves(train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses, args):
     """Plot training and validation loss curves and save to results directory.
     
     This function now plots accumulated losses from all training sessions,
@@ -899,20 +972,39 @@ def plot_training_curves(train_losses, val_losses, args):
     
     Args:
         train_losses: List of training losses per epoch (current session)
+        train_global_losses: List of training global losses per epoch (current session)
+        train_conc_var_losses: List of training concentration variance losses per epoch (current session)
         val_losses: List of validation losses per epoch (current session)
+        val_global_losses: List of validation global losses per epoch (current session)
+        val_conc_var_losses: List of validation concentration variance losses per epoch (current session)
         args: Argument namespace containing results directory
     """
     # Get accumulated losses from all training sessions
     # Pass checkpoint path if we're resuming training
     checkpoint_path = args.resume_from if hasattr(args, 'resume_from') else None
-    accumulated_train, accumulated_val = get_accumulated_losses(train_losses, val_losses, args, checkpoint_path)
+    accumulated_train, accumulated_train_global, accumulated_train_conc_var, accumulated_val, accumulated_val_global, accumulated_val_conc_var = get_accumulated_losses(train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses, args, checkpoint_path)
     
     # Create the plot with accumulated data
     plt.figure(figsize=(12, 8))
     epochs = range(1, len(accumulated_train) + 1)
     
+    # Always plot main losses
     plt.plot(epochs, accumulated_train, 'b-', label='Training Loss', linewidth=2, marker='o', markersize=4)
     plt.plot(epochs, accumulated_val, 'r-', label='Validation Loss', linewidth=2, marker='s', markersize=4)
+    
+    # Only plot global/variance losses if they exist (backward compatibility)
+    if accumulated_train_global:
+        epochs_global = range(len(accumulated_train) - len(accumulated_train_global) + 1, len(accumulated_train) + 1)
+        plt.plot(epochs_global, accumulated_train_global, 'b--', label='Training Global Loss', linewidth=2, marker='^', markersize=4)
+    if accumulated_train_conc_var:
+        epochs_conc = range(len(accumulated_train) - len(accumulated_train_conc_var) + 1, len(accumulated_train) + 1)
+        plt.plot(epochs_conc, accumulated_train_conc_var, 'b-.', label='Training Conc Variance Loss', linewidth=2, marker='v', markersize=4)
+    if accumulated_val_global:
+        epochs_val_global = range(len(accumulated_val) - len(accumulated_val_global) + 1, len(accumulated_val) + 1)
+        plt.plot(epochs_val_global, accumulated_val_global, 'r--', label='Validation Global Loss', linewidth=2, marker='d', markersize=4)
+    if accumulated_val_conc_var:
+        epochs_val_conc = range(len(accumulated_val) - len(accumulated_val_conc_var) + 1, len(accumulated_val) + 1)
+        plt.plot(epochs_val_conc, accumulated_val_conc_var, 'r-.', label='Validation Conc Variance Loss', linewidth=2, marker='x', markersize=4)
     
     # Add visual indicators for resume points if this is a resumed session
     if args.resume_from is not None and len(accumulated_train) > len(train_losses):
@@ -943,6 +1035,21 @@ def plot_training_curves(train_losses, val_losses, args):
         total_epochs = len(accumulated_train)
         
         stats_text = f'Total Epochs: {total_epochs}\nMin Train Loss: {min_train_loss:.4f}\nMin Val Loss: {min_val_loss:.4f}'
+        
+        # Add global/variance stats only if available (backward compatibility)
+        if accumulated_train_global:
+            min_train_global_loss = min(accumulated_train_global)
+            stats_text += f'\nMin Train Global Loss: {min_train_global_loss:.4f}'
+        if accumulated_val_global:
+            min_val_global_loss = min(accumulated_val_global)
+            stats_text += f'\nMin Val Global Loss: {min_val_global_loss:.4f}'
+        if accumulated_train_conc_var:
+            min_train_conc_var_loss = min(accumulated_train_conc_var)
+            stats_text += f'\nMin Train Conc Variance Loss: {min_train_conc_var_loss:.4f}'
+        if accumulated_val_conc_var:
+            min_val_conc_var_loss = min(accumulated_val_conc_var)
+            stats_text += f'\nMin Val Conc Variance Loss: {min_val_conc_var_loss:.4f}'
+
         plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
                 fontsize=10, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
     
@@ -957,7 +1064,70 @@ def plot_training_curves(train_losses, val_losses, args):
     print(f"Training curves saved to '{plot_path}' (total epochs: {len(accumulated_train)})")
     
     # Save the accumulated loss history for future sessions
-    save_loss_history(accumulated_train, accumulated_val, args)
+    save_loss_history(accumulated_train, accumulated_train_global, accumulated_train_conc_var, accumulated_val, accumulated_val_global, accumulated_val_conc_var, args)
+
+
+def variance_aware_multicol_loss(
+    y_pred,
+    y_true,
+    output_window_size,
+    target_cols,
+    lambda_conc_focus=0.5,
+    alpha=0.3,
+    beta=2.0,
+):
+    """
+    y_pred, y_true: [B, N_points, T_out * C]
+    output_window_size: T_out
+    target_cols: list like ['mass_concentration', 'head']
+    lambda_conc_focus: how much extra weight to put on variance-aware conc loss
+    alpha: base weight for low-variance nodes (0<alpha<1)
+    beta: exponent controlling how sharply we emphasise high-variance nodes
+    """
+
+    B, N, TC = y_pred.shape
+    C = TC // output_window_size
+    assert TC == output_window_size * C
+
+    # reshape to [B, N, T_out, C]
+    y_pred = y_pred.view(B, N, output_window_size, C)
+    y_true = y_true.view(B, N, output_window_size, C)
+
+    # Loss function
+    global_loss_fn = LpLoss(d=2, p=2, reduce_dims=[0, 1], reductions='mean')
+    local_loss_fn = LpLoss(d=1, p=2, reductions='mean')
+
+    # ----- 1) global MSE over all variables -----
+    global_loss = global_loss_fn(y_pred, y_true)
+
+    # ----- 2) variance-aware term for concentration -----
+    conc_idx = target_cols.index('mass_concentration')  # assumes name present
+
+    conc_pred = y_pred[..., conc_idx]   # [B, N, T]
+    conc_true = y_true[..., conc_idx]   # [B, N, T]
+
+    # node-wise temporal variance (on *normalized* targets)
+    with torch.no_grad():
+        # var over time dimension
+        var_t = conc_true.var(dim=[0, 2], unbiased=False)  # [N]
+        
+        # normalise variance within the batch
+        # (avoid division by tiny mean)
+        var_norm = var_t / (var_t.mean() + 1e-6)
+
+        # map to weights in [alpha, ~1] with emphasis on high variance
+        #   w = alpha + (1-alpha) * var_norm^beta, then renormalise mean to 1
+        weights = alpha + (1.0 - alpha) * (var_norm ** beta)
+        weights = weights / (weights.mean() + 1e-6)   # keep gradients stable
+        
+
+    conc_l2 = local_loss_fn(conc_pred, conc_true)        # [N]
+    conc_var_loss = (weights * conc_l2).mean()
+
+    # ----- 3) combine -----
+    loss = (1.0 - lambda_conc_focus) * global_loss + lambda_conc_focus * conc_var_loss
+
+    return loss, global_loss.detach(), conc_var_loss.detach()
 
 
 def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, scheduler, args):
@@ -1008,16 +1178,29 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
     print(f"Val loader length: {len(val_loader)}")
 
     # Use relative L2 loss with appropriate dimensionality
-    loss_fn = LpLoss(d=1, p=2, reduce_dims=[0, 1], reductions='mean')
+    # loss_fn = LpLoss(d=1, p=2, reduce_dims=[0, 1], reductions='mean')
+    loss_fn = lambda y_pred, y_true: variance_aware_multicol_loss(
+        y_pred, 
+        y_true, 
+        output_window_size=args.output_window_size,
+        target_cols=args.target_cols,
+        lambda_conc_focus=args.lambda_conc_focus,
+        alpha=args.var_aware_alpha,
+        beta=args.var_aware_beta,
+    )
 
     # Initialize training state
     start_epoch = 0
     train_losses = []
+    train_global_losses = []
+    train_conc_var_losses = []
     val_losses = []
+    val_global_losses = []
+    val_conc_var_losses = []
     
     # Load checkpoint if resuming training
     if args.resume_from is not None:
-        start_epoch, train_losses, val_losses = load_checkpoint(
+        start_epoch, train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses = load_checkpoint(
             args.resume_from, model, optimizer, scheduler, args
         )
 
@@ -1031,6 +1214,8 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
 
         # Track training loss for this epoch
         epoch_train_loss = 0.0
+        epoch_train_global_loss = 0.0
+        epoch_train_conc_var_loss = 0.0
         epoch_train_samples = 0
 
         # Training step loop
@@ -1073,10 +1258,14 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
             core_target = y[:, :core_len]
 
             # Compute loss on core points only
-            loss = loss_fn(core_output, core_target)
+            loss, global_loss, conc_var_loss = loss_fn(core_output, core_target)
+
+            print(f"DEBUG - Step {step_idx}: Loss={loss.item():.4f}, Global Loss={global_loss.item():.4f}, Conc Variance Loss={conc_var_loss.item():.4f}")
 
             # Accumulate training loss weighted by batch size
             epoch_train_loss += loss.item() * batch_size
+            epoch_train_global_loss += global_loss.item() * batch_size
+            epoch_train_conc_var_loss += conc_var_loss.item() * batch_size
             epoch_train_samples += batch_size
 
             # Backward pass and optimization step
@@ -1094,17 +1283,27 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
 
         # Calculate average training loss for this epoch
         avg_train_loss = epoch_train_loss / max(epoch_train_samples, 1)
+        avg_train_global_loss = epoch_train_global_loss / max(epoch_train_samples, 1)
+        avg_train_conc_var_loss = epoch_train_conc_var_loss / max(epoch_train_samples, 1)
+
+        # Record train losses
         train_losses.append(avg_train_loss)
+        train_global_losses.append(avg_train_global_loss)
+        train_conc_var_losses.append(avg_train_conc_var_loss)
 
         # Evaluate model on validation set after each epoch
-        val_loss = evaluate_model_on_patches(val_loader, model, loss_fn, args)
+        val_loss, val_global_loss, val_conc_var_loss = evaluate_model_on_patches(val_loader, model, loss_fn, args)
+        
+        # Record validation losses
         val_losses.append(val_loss)
+        val_global_losses.append(val_global_loss)
+        val_conc_var_losses.append(val_conc_var_loss)
         
         print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) Epoch {epoch+1} - Training Loss: {avg_train_loss:.4f}, Validation Loss: {val_loss:.4f}")
         
         # Save checkpoint periodically
         if (epoch + 1) % args.save_checkpoint_every == 0:
-            save_checkpoint(model, optimizer, scheduler, epoch, train_losses, val_losses, args)
+            save_checkpoint(model, optimizer, scheduler, epoch, train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses, args)
         
         # Step the learning rate scheduler based on type
         if args.scheduler_type == 'cosine':
@@ -1118,10 +1317,10 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
                 print(f"Learning rate updated to: {scheduler.get_last_lr()[0]:.6f}")
 
     # Save final checkpoint
-    save_checkpoint(model, optimizer, scheduler, args.epochs - 1, train_losses, val_losses, args, 'final_checkpoint.pth')
+    save_checkpoint(model, optimizer, scheduler, args.epochs - 1, train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses, args, 'final_checkpoint.pth')
     
     # Plot and save training curves
-    plot_training_curves(train_losses, val_losses, args)
+    plot_training_curves(train_losses, train_global_losses, train_conc_var_losses, val_losses, val_global_losses, val_conc_var_losses, args)
 
     return model
         
