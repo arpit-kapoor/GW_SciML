@@ -42,6 +42,7 @@ from src.data.transform import Normalize
 from src.data.patch_dataset_multi_col import GWPatchDatasetMultiCol
 from src.data.batch_sampler import PatchBatchSampler
 from src.models.neuralop.gino import GINO
+from src.models.neuralop.losses import LpLoss
 
 
 def setup_arguments():
@@ -529,23 +530,81 @@ def denormalize_observations(normalized_data, obs_transform, target_col_indices)
     if isinstance(std, torch.Tensor):
         std = std.cpu().numpy()
     
-    # print(f"Denormalizing with mean: {mean}, std: {std}")
-    # print(f"Mean shape: {mean.shape}, Std shape: {std.shape}")
-    # print(f"Normalized data shape: {normalized_data.shape}")
+    print(f"Denormalizing with mean: {mean}, std: {std}")
+    print(f"Mean shape: {mean.shape}, Std shape: {std.shape}")
+    print(f"Normalized data shape: {normalized_data.shape}")
+    print(f"Normalized data sample values: min={normalized_data.min():.4f}, max={normalized_data.max():.4f}, mean={normalized_data.mean():.4f}")
     
-    # # Reshape mean and std to broadcast correctly: [1, 1, 1, n_target_cols]
-    # mean = mean.reshape(1, 1, 1, -1)
-    # std = std.reshape(1, 1, 1, -1)
+    # The Normalize class uses broadcasting: (sample - mean) / std
+    # So denormalization is: sample * std + mean
+    # For shape [N_samples, N_points, output_window_size, n_target_cols] and mean/std of shape [n_target_cols],
+    # NumPy will broadcast from the right, applying each mean/std to its corresponding column
     
-    # Denormalize: original = normalized * std + mean
+    # No need to reshape - NumPy/PyTorch broadcasting automatically aligns from the rightmost dimension
     denormalized = normalized_data * std + mean
+    
+    print(f"Denormalized sample values: min={denormalized.min():.4f}, max={denormalized.max():.4f}, mean={denormalized.mean():.4f}")
     
     return denormalized
 
 
+def compute_kge(simulations, observations):
+    """
+    Compute Kling-Gupta Efficiency (KGE).
+    
+    KGE = 1 - sqrt((r - 1)**2 + (alpha - 1)**2 + (beta - 1)**2)
+    where:
+    - r: Pearson correlation coefficient
+    - alpha: Relative variability (std_sim / std_obs)
+    - beta: Bias ratio (mean_sim / mean_obs)
+    
+    Args:
+        simulations: Predicted values (flattened array)
+        observations: Target/observed values (flattened array)
+        
+    Returns:
+        Dictionary with KGE and its components (r, alpha, beta)
+    """
+    epsilon = 1e-10
+    
+    # Mean values
+    sim_mean = np.mean(simulations)
+    obs_mean = np.mean(observations)
+    
+    # Standard deviations
+    sim_std = np.std(simulations)
+    obs_std = np.std(observations)
+    
+    # Pearson correlation coefficient
+    if obs_std < epsilon or sim_std < epsilon:
+        r = 0.0
+    else:
+        r = np.corrcoef(observations, simulations)[0, 1]
+        if np.isnan(r):
+            r = 0.0
+    
+    # Alpha (variability ratio)
+    alpha = sim_std / (obs_std + epsilon)
+    
+    # Beta (bias ratio)
+    beta = sim_mean / (obs_mean + epsilon)
+    
+    # KGE
+    kge = 1 - np.sqrt((r - 1)**2 + (alpha - 1)**2 + (beta - 1)**2)
+    
+    return {
+        'kge': kge,
+        'r': r,
+        'alpha': alpha,
+        'beta': beta
+    }
+
+
 def compute_metrics(results_dict, args, obs_transform):
     """
-    Compute L2 loss and R2 score for each target column on train and val sets.
+    Compute relative L2 error, R2 score, and KGE for each target column on train and val sets.
+    
+    All metrics are computed on denormalized (original scale) data.
     
     Args:
         results_dict: Dictionary containing train and val predictions and targets
@@ -555,7 +614,7 @@ def compute_metrics(results_dict, args, obs_transform):
     Returns:
         Dictionary containing metrics for each dataset and target column
     """
-    from sklearn.metrics import r2_score, mean_absolute_error
+    from sklearn.metrics import r2_score
     
     metrics = {}
     
@@ -580,15 +639,26 @@ def compute_metrics(results_dict, args, obs_transform):
             col_predictions_flat = col_predictions.flatten()
             col_targets_flat = col_targets.flatten()
             
-            # Compute L2 loss (Mean Squared Error)
-            mae_loss = mean_absolute_error(col_targets_flat, col_predictions_flat)
+            # 1. Relative L2 Error (using numpy implementation)
+            # Relative L2 = ||pred - target||_2 / ||target||_2
+            diff = col_predictions_flat - col_targets_flat
+            l2_error = np.linalg.norm(diff)
+            l2_norm_target = np.linalg.norm(col_targets_flat)
+            rel_l2_error = l2_error / (l2_norm_target + 1e-10)
             
-            # Compute R2 score
+            # 2. R² Score
             r2 = r2_score(col_targets_flat, col_predictions_flat)
             
+            # 3. Kling-Gupta Efficiency (KGE)
+            kge_results = compute_kge(col_predictions_flat, col_targets_flat)
+            
             metrics[dataset_name][col_name] = {
-                'mae_loss': mae_loss,
-                'r2_score': r2
+                'rel_l2_error': rel_l2_error,
+                'r2_score': r2,
+                'kge': kge_results['kge'],
+                'kge_r': kge_results['r'],
+                'kge_alpha': kge_results['alpha'],
+                'kge_beta': kge_results['beta']
             }
     
     return metrics
@@ -606,7 +676,8 @@ def save_metrics(metrics, args):
     
     with open(metrics_file, 'w') as f:
         f.write("=" * 80 + "\n")
-        f.write("Model Performance Metrics\n")
+        f.write("Model Performance Metrics (Relative & Dimensionless)\n")
+        f.write("All metrics computed on denormalized (original scale) data\n")
         f.write("=" * 80 + "\n\n")
         
         for dataset_name in ['train', 'val']:
@@ -614,15 +685,25 @@ def save_metrics(metrics, args):
             f.write("-" * 80 + "\n")
             
             for col_name in args.target_cols:
-                mae_loss = metrics[dataset_name][col_name]['mae_loss']
-                r2_score = metrics[dataset_name][col_name]['r2_score']
+                col_metrics = metrics[dataset_name][col_name]
                 
                 f.write(f"\n{col_name}:\n")
-                f.write(f"  MAE Loss: {mae_loss:.6f}\n")
-                f.write(f"  R2 Score:      {r2_score:.6f}\n")
+                f.write(f"  Relative L2 Error:  {col_metrics['rel_l2_error']:.6f}  (0.0 is perfect)\n")
+                f.write(f"  R² Score:           {col_metrics['r2_score']:.6f}  (1.0 is perfect)\n")
+                f.write(f"\n")
+                f.write(f"  Kling-Gupta Efficiency:\n")
+                f.write(f"    KGE:              {col_metrics['kge']:.6f}  (1.0 is perfect)\n")
+                f.write(f"      - r (correlation):     {col_metrics['kge_r']:.4f}  (1.0 is perfect)\n")
+                f.write(f"      - alpha (variability): {col_metrics['kge_alpha']:.4f}  (1.0 is perfect)\n")
+                f.write(f"      - beta (bias ratio):   {col_metrics['kge_beta']:.4f}  (1.0 is perfect)\n")
             
             f.write("\n")
         
+        f.write("=" * 80 + "\n")
+        f.write("\nMetric Interpretation:\n")
+        f.write("  - Relative L2 Error: Dimensionless error normalized by target magnitude\n")
+        f.write("  - R² Score: Coefficient of determination (fraction of variance explained)\n")
+        f.write("  - KGE: Combines correlation, variability, and bias (preferred in hydrogeology)\n")
         f.write("=" * 80 + "\n")
     
     print(f"Metrics saved to: {metrics_file}")
@@ -810,15 +891,31 @@ def create_first_timestep_scatter_plots(predictions, targets, args):
 
 def create_timestep_scatter_plots(predictions, targets, col_name, col_dir, selected_node_idx, args):
     """Create scatter plots at different timesteps for a single column."""
-    timesteps_to_plot = [0, predictions.shape[2]//2, predictions.shape[2]-1]  # First, middle, last
+    output_window_size = predictions.shape[2]
+    
+    # Adapt timesteps to plot based on output window size
+    if output_window_size == 1:
+        timesteps_to_plot = [0]  # Only first timestep
+    elif output_window_size == 2:
+        timesteps_to_plot = [0, 1]  # First two timesteps
+    elif output_window_size == 3:
+        timesteps_to_plot = [0, 1, 2]  # First three timesteps
+    else:
+        timesteps_to_plot = [0, output_window_size//2, output_window_size-1]  # First, middle, last
+    
     n_samples_to_plot = selected_node_idx.shape[0]
     sample_indices = selected_node_idx
     
     fig, axes = plt.subplots(n_samples_to_plot, len(timesteps_to_plot), 
-                            figsize=(20, 4*n_samples_to_plot))
+                            figsize=(7*len(timesteps_to_plot), 5*n_samples_to_plot))
     
-    if n_samples_to_plot == 1:
+    # Ensure axes is always 2D for consistent indexing
+    if n_samples_to_plot == 1 and len(timesteps_to_plot) == 1:
+        axes = np.array([[axes]])
+    elif n_samples_to_plot == 1:
         axes = axes.reshape(1, -1)
+    elif len(timesteps_to_plot) == 1:
+        axes = axes.reshape(-1, 1)
     
     for axes_idx, sample_idx in enumerate(sample_indices):
         for plot_idx, timestep in enumerate(timesteps_to_plot):
@@ -827,25 +924,25 @@ def create_timestep_scatter_plots(predictions, targets, col_name, col_dir, selec
             pred_t = predictions[:, sample_idx, timestep]
             target_t = targets[:, sample_idx, timestep]
             
-            ax.scatter(target_t, pred_t, alpha=0.6, s=2)
+            ax.scatter(target_t, pred_t, alpha=0.6, s=5)
             
             min_val = min(target_t.min(), pred_t.min())
             max_val = max(target_t.max(), pred_t.max())
-            ax.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8, label='Perfect')
+            ax.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.8, linewidth=2.5, label='Perfect')
             
             correlation = np.corrcoef(target_t, pred_t)[0, 1]
             
-            ax.set_xlabel('Observed', fontsize=20)
-            ax.set_ylabel('Predicted', fontsize=20)
-            ax.set_title(f'Node {sample_idx}, Timestep {timestep+1}\nCorr: {correlation:.3f}', fontsize=20)
-            ax.tick_params(axis='both', which='major', labelsize=16)
+            ax.set_xlabel('Observed', fontsize=24)
+            ax.set_ylabel('Predicted', fontsize=24)
+            ax.set_title(f'Node {sample_idx}, Timestep {timestep+1}\nCorr: {correlation:.3f}', fontsize=24)
+            ax.tick_params(axis='both', which='major', labelsize=20)
             ax.grid(True, alpha=0.3)
             
             if axes_idx == 0 and plot_idx == 0:
-                ax.legend(fontsize=18)
+                ax.legend(fontsize=22)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(col_dir, 'predictions_vs_observations.png'), 
+    plt.savefig(os.path.join(col_dir, f'{col_name}_pred_vs_obs_scatter.png'), 
                 dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -876,7 +973,7 @@ def create_time_series_plots(predictions, targets, col_name, col_dir, selected_n
     # Iterate over all timesteps in the prediction horizon
     for timestep_idx in range(output_window_size):
         # Create a figure with subplots for all selected samples
-        fig, axes = plt.subplots(n_samples_to_plot, 1, figsize=(12, 3*n_samples_to_plot))
+        fig, axes = plt.subplots(n_samples_to_plot, 1, figsize=(12, 5*n_samples_to_plot))
         
         if n_samples_to_plot == 1:
             axes = [axes]
@@ -908,7 +1005,7 @@ def create_time_series_plots(predictions, targets, col_name, col_dir, selected_n
         plt.tight_layout()
         
         # Save individual timestep plot
-        timestep_filename = f'timeseries_t{timestep_idx+1:02d}.png'
+        timestep_filename = f'{col_name}_pred_vs_obs_lineplot_t{timestep_idx+1:02d}.png'
         plt.savefig(os.path.join(timeseries_dir, timestep_filename), 
                     dpi=300, bbox_inches='tight')
         plt.close()

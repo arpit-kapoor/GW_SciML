@@ -134,7 +134,7 @@ generate_experiment_name() {
     
     # Add window sizes if not default
     if [ "$INPUT_WINDOW" != "5" ] || [ "$OUTPUT_WINDOW" != "5" ]; then
-        name="${name}_win${INPUT_WINDOW}_${OUTPUT_WINDOW}"
+        name="${name}_win${INPUT_WINDOW}_out${OUTPUT_WINDOW}"
     fi
     
     echo "$name"

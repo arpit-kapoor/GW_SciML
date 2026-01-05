@@ -185,3 +185,6 @@ cython_debug/
 
 # Katana output files
 *.OU
+
+# iframe figures
+*.html
