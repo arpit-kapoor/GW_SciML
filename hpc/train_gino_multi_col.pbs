@@ -1,10 +1,16 @@
 #!/bin/bash
 #PBS -N GINO_Train
-#PBS -l select=1:ncpus=2:mem=8gb:ngpus=2:gpu_model=A100
+#PBS -l select=1:ncpus=8:mem=16gb:ngpus=2:gpu_model=A100
 #PBS -l walltime=12:00:00
 #PBS -m abe
 #PBS -j oe
-#PBS -o /srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs/train_gino_${PBS_JOBID}.log
+
+# Redirect output to log file
+LOG_DIR="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs"
+LOG_FILE="${LOG_DIR}/train_gino_${PBS_JOBID}.log"
+exec > "$LOG_FILE" 2>&1
+echo "Job started on $(hostname) at $(date)"
+echo "Job ID: $PBS_JOBID"
 
 # Simple GINO training with config-based directory organization
 # 
@@ -74,9 +80,13 @@ echo "Training arguments:"
 echo "$TRAIN_ARGS"
 echo ""
 echo "=========================================="
+echo ""
+echo "Executing command:"
+echo "$PYTHON_ENV -u train_gino_on_patches_multi_col_refactored.py $TRAIN_ARGS"
+echo ""
 
-# Execute training
-$PYTHON_ENV train_gino_on_patches_multi_col_refactored.py $TRAIN_ARGS
+# Execute training with unbuffered output (-u flag)
+$PYTHON_ENV -u train_gino_on_patches_multi_col_refactored.py $TRAIN_ARGS
 
 EXIT_CODE=$?
 

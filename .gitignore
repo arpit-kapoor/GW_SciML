@@ -188,3 +188,5 @@ cython_debug/
 
 # iframe figures
 *.html
+
+GINO_Train.o*

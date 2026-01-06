@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N GINO_predictions_multi
 #PBS -l select=1:ncpus=4:mem=16gb:ngpus=1
-#PBS -l walltime=02:00:00
+#PBS -l walltime=12:00:00
 #PBS -m abe
 #PBS -j oe
 #PBS -o /srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs/gino_predictions_multi_col.log
@@ -49,7 +49,7 @@ TARGET_COLS="${TARGET_COLS:-mass_concentration head}"
 
 # Experiment name (should match training experiment)
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-exp_lr5e4_exp_bs128}"  # Default experiment
-CHECKPOINT="${CHECKPOINT:-latest_checkpoint.pth}"  # Default to latest checkpoint
+CHECKPOINT="${CHECKPOINT:-final_checkpoint.pth}"  # Default to latest checkpoint
 
 # Control where predictions are stored
 STORE_WITH_MODEL="${STORE_WITH_MODEL:-false}"

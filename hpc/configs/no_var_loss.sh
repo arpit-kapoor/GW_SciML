@@ -1,7 +1,4 @@
 #!/bin/bash
-# Default configuration for GINO training
-# Directory: results/GINO/default/training_TIMESTAMP/
-
 TRAIN_ARGS="
 --base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density
 --patch-data-subdir filter_patch 
@@ -14,5 +11,5 @@ TRAIN_ARGS="
 --scheduler-type exponential 
 --grad-clip-norm 1.0 
 --save-checkpoint-every 25
---lambda-conc-focus 0.3
+--lambda-conc-focus 0.0
 "

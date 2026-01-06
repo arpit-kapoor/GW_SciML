@@ -1,20 +1,13 @@
 """
 Train GINO on variable-density groundwater patches with multi-column support.
-
-This is a streamlined, modular version that uses reusable components from src/training,
-src/data, and src/models modules. The heavy lifting has been moved to dedicated modules,
-making this script much shorter and easier to maintain.
-
-Usage:
-    python train_gino_on_patches_multi_col_refactored.py [options]
-    
-For full options, run:
-    python train_gino_on_patches_multi_col_refactored.py --help
 """
 
+import sys
 import argparse
 import os
 import pkgutil
+import importlib
+import inspect
 import torch
 from torch.utils.data import DataLoader
 
@@ -36,34 +29,46 @@ from src.training import (
     train_model,
 )
 
-# --- Begin ultra-robust DP compatibility patch for tltorch complex buffers ---
+# --- Begin DP compatibility patch for tltorch complex buffers ---
 try:
+    import sys
+    import importlib
+    import inspect
+    import torch.nn as _nn
     import tltorch
 
     def _safe_register_buffer(self, name, value, persistent=True):
-        if value is not None and value.is_complex():
-            value = torch.view_as_real(value.contiguous())
-        self._register_buffer_original(name, value, persistent)
+        # Only convert actual complex tensors; real tensors pass through unchanged
+        if torch.is_tensor(value) and value.is_complex():
+            value = torch.view_as_real(value)
+        # Use base nn.Module.register_buffer to avoid any custom overrides
+        return _nn.Module.register_buffer(self, name, value, persistent=persistent)
 
     patched = []
 
+    # Walk all tltorch submodules and patch classes in modules likely to hold complex/factorized tensors
     for _finder, _modname, _ispkg in pkgutil.walk_packages(tltorch.__path__, tltorch.__name__ + '.'):
+        if not any(key in _modname for key in ('factorized', 'complex')):
+            continue
         try:
-            _mod = __import__(_modname, fromlist=[''])
-            for _name in dir(_mod):
-                _cls = getattr(_mod, _name)
-                if isinstance(_cls, type) and issubclass(_cls, torch.nn.Module):
-                    if not hasattr(_cls, '_register_buffer_original'):
-                        _cls._register_buffer_original = _cls.register_buffer
-                        _cls.register_buffer = _safe_register_buffer
-                        patched.append(f"{_modname}.{_name}")
+            _m = importlib.import_module(_modname)
         except Exception:
-            pass
+            continue
 
-    print(f"Patched tltorch DP compatibility on {len(patched)} classes")
+        for _name, _obj in inspect.getmembers(_m, inspect.isclass):
+            # Only patch torch.nn.Module subclasses
+            try:
+                if issubclass(_obj, _nn.Module):
+                    # Overwrite register_buffer unconditionally with the safe version
+                    setattr(_obj, 'register_buffer', _safe_register_buffer)
+                    patched.append(f'{_modname}:{_name}')
+            except Exception:
+                pass
+
+    print(f"Patched tltorch DP compatibility on {len(patched)} classes. Examples: {patched[:6]}")
 except Exception as _e:
     print(f"Warning: DP compatibility patch failed: {_e}")
-# --- End ultra-robust patch ---
+# --- End patch ---
 
 
 def add_gino_model_args(parser):
@@ -131,7 +136,12 @@ def create_data_loaders(train_ds, val_ds, args):
 
 
 if __name__ == "__main__":
+    print("\n" + "="*60)
+    print("GINO Training Script - Starting")
+    print("="*60)
+    
     # Setup arguments with defaults
+    print("Setting up training arguments...")
     args = setup_training_arguments(
         description='Train GINO model on groundwater patches with multi-column support',
         default_base_data_dir='/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density',
@@ -142,17 +152,21 @@ if __name__ == "__main__":
     # Configure GINO model parameters and target columns
     args = define_model_parameters(args)
     args = configure_target_col_indices(args)
+    print("Training configuration:")
+    for k in sorted(vars(args)):
+        print(f"  {k}: {getattr(args, k)}")
+    print("="*60 + "\n")
     
-    print(f"\n{'='*60}")
-    print(f"Training Configuration Summary")
-    print(f"{'='*60}")
-    print(f"Device: {args.device}")
-    print(f"Target columns: {args.target_cols} (indices: {args.target_col_indices})")
-    print(f"Input/Output windows: {args.input_window_size}/{args.output_window_size}")
-    print(f"Input/Output channels: {args.in_gno_out_channels}/{args.out_channels}")
-    print(f"Batch size: {args.batch_size}, Epochs: {args.epochs}")
-    print(f"Learning rate: {args.learning_rate}, Scheduler: {args.scheduler_type}")
-    print(f"{'='*60}\n")
+    # print(f"\n{'='*60}")
+    # print(f"Training Configuration Summary")
+    # print(f"{'='*60}")
+    # print(f"Device: {args.device}")
+    # print(f"Target columns: {args.target_cols} (indices: {args.target_col_indices})")
+    # print(f"Input/Output windows: {args.input_window_size}/{args.output_window_size}")
+    # print(f"Input/Output channels: {args.in_gno_out_channels}/{args.out_channels}")
+    # print(f"Batch size: {args.batch_size}, Epochs: {args.epochs}")
+    # print(f"Learning rate: {args.learning_rate}, Scheduler: {args.scheduler_type}")
+    # print(f"{'='*60}\n")
 
     # Set random seeds
     torch.manual_seed(args.seed)
@@ -160,11 +174,14 @@ if __name__ == "__main__":
         torch.cuda.manual_seed(args.seed)
     
     # Prepare data transforms and datasets
+    print("Calculating coordinate transform...")
     coord_transform = calculate_coord_transform(args.raw_data_dir)
+    print("Calculating observation transform...")
     obs_transform = calculate_obs_transform(
         args.raw_data_dir,
         target_obs_cols=['mass_concentration', 'head', 'pressure']
     )
+    print("Creating datasets...")
     train_ds, val_ds = create_patch_datasets(
         dataset_class=GWPatchDatasetMultiCol,
         patch_data_dir=args.patch_data_dir,

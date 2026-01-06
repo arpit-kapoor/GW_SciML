@@ -235,7 +235,7 @@ class GWPatchDatasetMultiCol(Dataset):
 
         return patch_data
     
-    def compute_weights(self, patch_data, alpha=0.3, beta=2.0):
+    def compute_weights(self, patch_data, alpha=0.25, beta=1.0, use_log_scaling=True):
         """
         Compute variance-aware weights for each node across all patches.
         
@@ -245,7 +245,8 @@ class GWPatchDatasetMultiCol(Dataset):
         Args:
             patch_data (list): List of patch dictionaries containing temporal_variances
             alpha (float): Base weight for low-variance nodes (0 < alpha < 1)
-            beta (float): Exponent controlling emphasis on high-variance nodes
+            beta (float): Exponent controlling emphasis on high-variance nodes (default: 1.0)
+            use_log_scaling (bool): Use logarithmic scaling for more balanced weights
             
         Returns:
             list: Updated patch_data with 'weights' key added to each patch
@@ -271,8 +272,13 @@ class GWPatchDatasetMultiCol(Dataset):
             # Clip variances to reduce outlier impact
             var_clip = np.clip(variances, 0.0, clip_variance)
 
-            # Normalize clipped variances
-            var_norm = var_clip / (max_variance + eps)
+            if use_log_scaling:
+                # Use log scaling for more balanced weight distribution
+                var_log = np.log1p(var_clip / (mean_variance + eps))
+                var_norm = var_log / (np.log1p(clip_variance / (mean_variance + eps)) + eps)
+            else:
+                # Original: linear scaling
+                var_norm = var_clip / (max_variance + eps)
 
             # Compute weights using the specified formula
             weights = alpha + (1 - alpha) * (var_norm ** beta)
@@ -283,9 +289,13 @@ class GWPatchDatasetMultiCol(Dataset):
             # Store weights in patch data
             patch['weights'] = weights.astype(np.float32)  # [n_points]
         
+        # Compute and print weight statistics
+        weight_stats = np.concatenate([p['weights'] for p in patch_data])
         print(f"Computed variance-aware weights for {len(patch_data)} patches")
         print(f"Dataset variance range: [{all_variances.min():.6f}, {all_variances.max():.6f}]")
         print(f"Dataset mean variance: {mean_variance:.6f}")
+        print(f"Weight range: [{weight_stats.min():.4f}, {weight_stats.max():.4f}]")
+        print(f"Weight std: {weight_stats.std():.4f}")
         
         return patch_data
 

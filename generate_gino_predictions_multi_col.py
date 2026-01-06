@@ -748,7 +748,7 @@ def create_dataset_visualizations(predictions, targets, coords_data, dataset_nam
 
     # Identify node indices with least to highest variance in each target column
     # Compute variance for each node for each target column
-    node_variance = np.var(predictions[:, :, 0, :], axis=0)
+    node_variance = np.var(targets[:, :, 0, :], axis=0)
     print(f"Node variance shape: {node_variance.shape}")
 
     # # node_variance has shape [n_nodes, n_target_cols]
@@ -776,17 +776,28 @@ def create_dataset_visualizations(predictions, targets, coords_data, dataset_nam
     # selected_node_idx = np.stack([idx_5, idx_25, idx_50, idx_75, idx_95], axis=0)
 
     # Alternatively, select nodes at specific percentiles directly
+    p95 = np.percentile(node_variance, 95, axis=0)
     p99 = np.percentile(node_variance, 99, axis=0)
     selected_node_idx = []
     for col_idx, col_name in enumerate(args.target_cols):
+        
+        print(f"{col_name} - 95th percentile variance: {p95[col_idx]:.6f}")
         print(f"{col_name} - 99th percentile variance: {p99[col_idx]:.6f}")
-        # Identify nodes above 99th percentile for this column
-        node_idx_above_p99 = np.where(node_variance[:, col_idx] >= p99[col_idx])[0]
-        print(f"{col_name} - Number of nodes above 99th percentile: {len(node_idx_above_p99)}")
 
-        # Randomly select 5 nodes from those above 99th percentile for each target column
-        # np.random.seed(42)  # For reproducibility
-        selected_node_idx.append(np.random.choice(node_idx_above_p99, size=(5, 1), replace=False))
+        # Identify nodes above 99th percentile for this column
+        node_idx_in_range = np.where(node_variance[:, col_idx] > p99[col_idx])[0]
+
+        # node_idx_in_range = np.where((node_variance[:, col_idx] >= p95[col_idx]) & (node_variance[:, col_idx] <= p99[col_idx]))[0]
+
+        # print(f"{col_name} - Number of nodes between 95th and 99th percentile: {len(node_idx_in_range)}")
+
+        # Randomly select 5 nodes from those above 95th percentile for each target column
+        np.random.seed(42)  # For reproducibility
+        # select first 3 and last 2 nodes for consistency
+        # selected_node_idx.append(np.concatenate((node_idx_in_range[:3], node_idx_in_range[-2:])).reshape(5, 1))
+        selected_node_idx.append(np.random.choice(node_idx_in_range, size=(5, 1), replace=False)) 
+        
+        # Take first 5 for consistency
     
     selected_node_idx = np.hstack(selected_node_idx)  # Shape: [5, n_target_cols]
 
