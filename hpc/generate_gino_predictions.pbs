@@ -1,105 +1,95 @@
 #!/bin/bash
-#PBS -N GINO_predictions
-#PBS -l select=1:ncpus=4:mem=46gb:ngpus=1
-#PBS -l walltime=02:00:00
+#PBS -N GINO_Predict
+#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1
+#PBS -l walltime=4:00:00
 #PBS -m abe
 #PBS -j oe
-#PBS -o /srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs/gino_predictions.log
 
-# USAGE:
-# Directory structure follows training: TARGET_COL/EXPERIMENT_NAME/gino_TIMESTAMP/
-# Predictions can be stored either:
-# 1. With model (STORE_WITH_MODEL=true):  RESULTS_BASE_DIR/TARGET_COL/EXPERIMENT_NAME/gino_TIMESTAMP/predictions/
-# 2. Separately (default):                PREDICTIONS_BASE_DIR/TARGET_COL/EXPERIMENT_NAME/gino_TIMESTAMP/
-# 
-# BASIC USAGE:
-# Default experiment:               qsub generate_gino_predictions.pbs
-# Different target:                qsub -v TARGET_COL=head generate_gino_predictions.pbs
-# Different experiment:            qsub -v EXPERIMENT_NAME=exp_lr1e3_cos_bs256 generate_gino_predictions.pbs
-# Different checkpoint:            qsub -v CHECKPOINT=checkpoint_epoch_0050.pth generate_gino_predictions.pbs
-# Store with model:               qsub -v STORE_WITH_MODEL=true generate_gino_predictions.pbs
-# Custom predictions dir:          qsub -v PREDICTIONS_BASE_DIR=/path/to/predictions generate_gino_predictions.pbs
-# 
-# EXAMPLES:
-# - Default separate storage:      PREDICTIONS_BASE_DIR/mass_concentration/exp_lr5e4_cos_bs128/gino_TIMESTAMP/
-# - Store with model:             RESULTS_BASE_DIR/mass_concentration/exp_lr5e4_cos_bs128/gino_TIMESTAMP/predictions/
-# - Head predictions:             PREDICTIONS_BASE_DIR/head/exp_lr5e4_cos_bs128/gino_TIMESTAMP/
-# - Custom experiment:            PREDICTIONS_BASE_DIR/mass_concentration/my_custom_experiment/gino_TIMESTAMP/
+# Redirect output to log file
+LOG_DIR="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs"
+LOG_FILE="${LOG_DIR}/predict_gino_${PBS_JOBID}.log"
+exec > "$LOG_FILE" 2>&1
+echo "Job started on $(hostname) at $(date)"
+echo "Job ID: $PBS_JOBID"
 
-# Change to the directory from which the job was submitted
+# Simple GINO prediction with config-based setup
+#
+# Usage examples:
+#   qsub -v CONFIG=default hpc/generate_gino_predictions.pbs
+#   qsub -v CONFIG=high_lr hpc/generate_gino_predictions.pbs
+#   qsub -v CONFIG=custom_model hpc/generate_gino_predictions.pbs
+#
+# Available configs (see hpc/prediction_configs/):
+#   - default      : Predict using default trained model
+#   - high_lr      : Predict using high_lr experiment model
+#   - three_vars   : Predict using three variables model
+
 cd $PBS_O_WORKDIR/..
 
-# Set up base directories and Python environment
-RESULTS_BASE_DIR="${RESULTS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO}"
-PREDICTIONS_BASE_DIR="${PREDICTIONS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions}"
+# Environment
 PYTHON_ENV="/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python"
-BASE_DATA_DIR="/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density"
+PREDICTIONS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions"
 
-# Parameters (matching training configuration)
-BATCH_SIZE="${BATCH_SIZE:-128}"
-INPUT_WINDOW="${INPUT_WINDOW:-5}"
-OUTPUT_WINDOW="${OUTPUT_WINDOW:-5}"
-TARGET_COL="${TARGET_COL:-mass_concentration}"
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-exp_lr5e4_exp_bs128}"  # Default experiment
-CHECKPOINT="${CHECKPOINT:-latest_checkpoint.pth}"  # Default to latest checkpoint
+# Determine config name (defaults to 'default' if not specified)
+CONFIG_NAME="${CONFIG:-default}"
 
-# Control where predictions are stored
-# If true, store predictions alongside model in experiment directory
-# If false, store in separate predictions directory
-STORE_WITH_MODEL="${STORE_WITH_MODEL:-false}"
+# Create config-specific predictions directory
+CONFIG_PREDICTIONS_DIR="${PREDICTIONS_BASE_DIR}/${CONFIG_NAME}"
+mkdir -p "$CONFIG_PREDICTIONS_DIR"
 
-# Set up experiment directories
-TARGET_RESULTS_DIR="$RESULTS_BASE_DIR/$TARGET_COL"
-EXPERIMENT_DIR="$TARGET_RESULTS_DIR/$EXPERIMENT_NAME"
+echo "=========================================="
+echo "GINO Prediction Job"
+echo "=========================================="
+echo "Config: $CONFIG_NAME"
+echo "Predictions directory: $CONFIG_PREDICTIONS_DIR"
+echo "Job ID: $PBS_JOBID"
+echo "Start time: $(date)"
+echo "=========================================="
 
-# Find the most recent training run
-LATEST_RESULTS_DIR=$(find "$EXPERIMENT_DIR" -maxdepth 1 -type d -name "gino_*" | sort | tail -1)
-
-if [ -z "$LATEST_RESULTS_DIR" ]; then
-    echo "Error: No training runs found for experiment '$EXPERIMENT_NAME'"
-    echo "Available experiments for target '$TARGET_COL':"
-    find "$TARGET_RESULTS_DIR" -maxdepth 1 -type d -name "exp_*" | sed 's|.*/||' | sort
+# Load config
+CONFIG_FILE="hpc/prediction_configs/${CONFIG_NAME}.sh"
+if [ -f "$CONFIG_FILE" ]; then
+    echo "Loading configuration from: $CONFIG_FILE"
+    source "$CONFIG_FILE"
+    echo "Configuration loaded successfully"
+else
+    echo "Error: Config file $CONFIG_FILE not found"
+    echo "Available configs:"
+    ls -1 hpc/prediction_configs/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
     exit 1
 fi
 
-# Construct model path
-MODEL_PATH="$LATEST_RESULTS_DIR/checkpoints/$CHECKPOINT"
-
+# Verify model path exists
 if [ ! -f "$MODEL_PATH" ]; then
     echo "Error: Model checkpoint not found: $MODEL_PATH"
-    echo "Available checkpoints:"
-    ls -1 "$LATEST_RESULTS_DIR/checkpoints/"
     exit 1
 fi
 
-# Set up predictions directory based on configuration
-if [ "$STORE_WITH_MODEL" = "true" ]; then
-    # Store predictions alongside model in experiment directory
-    PREDICTIONS_DIR="$LATEST_RESULTS_DIR/predictions"
-else
-    # Store in separate predictions directory with experiment structure
-    PREDICTIONS_DIR="$PREDICTIONS_BASE_DIR/$TARGET_COL/$EXPERIMENT_NAME/$(basename $LATEST_RESULTS_DIR)"
-fi
+# Append results directory to prediction args
+PREDICT_ARGS="$PREDICT_ARGS --results-dir $CONFIG_PREDICTIONS_DIR"
 
-# Create predictions directory
-mkdir -p "$PREDICTIONS_DIR"
+# Display final command
+echo ""
+echo "Prediction arguments:"
+echo "$PREDICT_ARGS"
+echo ""
+echo "=========================================="
+echo ""
+echo "Executing command:"
+echo "$PYTHON_ENV -u generate_gino_predictions_refactored.py $PREDICT_ARGS"
+echo ""
 
-echo "Target: $TARGET_COL"
-echo "Experiment: $EXPERIMENT_NAME"
-echo "Model path: $MODEL_PATH"
-echo "Predictions directory: $PREDICTIONS_DIR"
-echo "Storing predictions with model: $STORE_WITH_MODEL"
+# Execute prediction with unbuffered output (-u flag)
+$PYTHON_ENV -u generate_gino_predictions_refactored.py $PREDICT_ARGS
 
-# Run the prediction script
-$PYTHON_ENV generate_gino_predictions.py \
-    --model-path "$MODEL_PATH" \
-    --base-data-dir "$BASE_DATA_DIR" \
-    --results-dir "$PREDICTIONS_DIR" \
-    --target-col "$TARGET_COL" \
-    --input-window-size "$INPUT_WINDOW" \
-    --output-window-size "$OUTPUT_WINDOW" \
-    --batch-size "$BATCH_SIZE" \
-    --device auto
+EXIT_CODE=$?
 
-echo "Prediction generation completed!"
-echo "Results saved to: $PREDICTIONS_DIR"
+echo ""
+echo "=========================================="
+echo "Prediction generation completed"
+echo "Exit code: $EXIT_CODE"
+echo "End time: $(date)"
+echo "Predictions saved to: $CONFIG_PREDICTIONS_DIR"
+echo "=========================================="
+
+exit $EXIT_CODE
