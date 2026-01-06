@@ -601,3 +601,74 @@ class WeightedL2DragLoss(object):
         loss = (1.0/len(self.mappings) + 1)*loss
 
         return loss
+
+
+def variance_aware_multicol_loss(
+    y_pred,
+    y_true,
+    weights,
+    output_window_size,
+    target_cols,
+    lambda_conc_focus=0.5,
+):
+    """
+    Compute variance-aware multi-column loss using pre-computed weights from the dataset.
+    
+    This loss function combines a global loss over all variables with a concentration-specific
+    variance-weighted loss. It's designed for multi-variable time series prediction where
+    different variables (e.g., concentration, head, pressure) are concatenated along the
+    last dimension.
+    
+    Args:
+        y_pred (torch.Tensor): Predicted values [B, N_points, T_out * C]
+        y_true (torch.Tensor): Target values [B, N_points, T_out * C]
+        weights (torch.Tensor): Pre-computed variance-aware weights [N_points]
+        output_window_size (int): T_out (number of output timesteps)
+        target_cols (list): List of target column names like ['mass_concentration', 'head']
+        lambda_conc_focus (float): Weight factor for concentration-focused loss (0 to 1)
+    
+    Returns:
+        tuple: (total_loss, global_loss, conc_var_loss)
+            - total_loss: Combined loss value
+            - global_loss: Global MSE over all variables (detached)
+            - conc_var_loss: Variance-weighted concentration loss (detached)
+    
+    Note:
+        This function assumes 'mass_concentration' is one of the target columns.
+        The weights should be pre-computed based on temporal variances across the dataset
+        and normalized to have mean 1.0.
+    """
+
+    B, N, TC = y_pred.shape
+    C = TC // output_window_size
+    assert TC == output_window_size * C, f"Shape mismatch: {TC} != {output_window_size} * {C}"
+
+    # reshape to [B, N, T_out, C]
+    y_pred = y_pred.view(B, N, output_window_size, C)
+    y_true = y_true.view(B, N, output_window_size, C)
+
+    # Loss function
+    global_loss_fn = LpLoss(d=2, p=2, reduce_dims=[0, 1], reductions='mean')
+    local_loss_fn = LpLoss(d=1, p=2, reductions='mean')
+
+    # ----- 1) global MSE over all variables -----
+    global_loss = global_loss_fn(y_pred, y_true)
+
+    # ----- 2) variance-aware term for concentration using pre-computed weights -----
+    conc_idx = target_cols.index('mass_concentration')  # assumes name present
+
+    conc_pred = y_pred[..., conc_idx]   # [B, N, T]
+    conc_true = y_true[..., conc_idx]   # [B, N, T]
+
+    # Use pre-computed weights from the dataset
+    # These weights are computed based on temporal variances across the full dataset
+    # and are already normalized to have mean 1.0
+    weights = weights.to(y_pred.device)  # Ensure weights are on the same device
+
+    conc_l2 = local_loss_fn(conc_pred, conc_true)        # [N]
+    conc_var_loss = (weights * conc_l2).mean()
+
+    # ----- 3) combine -----
+    loss = (1.0 - lambda_conc_focus) * global_loss + lambda_conc_focus * conc_var_loss
+
+    return loss, global_loss.detach(), conc_var_loss.detach()

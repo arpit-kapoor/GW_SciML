@@ -1,309 +1,98 @@
 #!/bin/bash
-#PBS -N GINO_MultiCol
+#PBS -N GINO_Train
 #PBS -l select=1:ncpus=2:mem=8gb:ngpus=2:gpu_model=A100
 #PBS -l walltime=12:00:00
 #PBS -m abe
 #PBS -j oe
-#PBS -o /srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs/train_gino_multi_col.log
+#PBS -o /srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs/train_gino_${PBS_JOBID}.log
 
-# USAGE:
-# Directory structure: RESULTS_BASE_DIR/multi_col/TARGET_COLS_JOINED/EXPERIMENT_NAME/gino_multi_TIMESTAMP/
+# Simple GINO training with config-based directory organization
 # 
-# EXPERIMENT MANAGEMENT:
-# Experiments are auto-named based on hyperparameters (e.g., exp_lr5e4_cos_bs128)
-# Each experiment maintains independent checkpoints and can be resumed separately
+# Directory structure: RESULTS_BASE_DIR/CONFIG_NAME/gino_multi_TIMESTAMP/
 # 
-# BASIC USAGE:
-# Resume default experiment:         qsub train_gino_multi_col.pbs
-# Start fresh experiment:            qsub -v RESUME_TRAINING=false train_gino_multi_col.pbs
-# Train different target columns:    qsub -v TARGET_COLS="head pressure" train_gino_multi_col.pbs
-# 
-# TARGET COLUMN COMBINATIONS:
-# Two variables:                     qsub -v TARGET_COLS="mass_concentration head" train_gino_multi_col.pbs
-# Three variables:                   qsub -v TARGET_COLS="mass_concentration head pressure" train_gino_multi_col.pbs
-# Different pair:                    qsub -v TARGET_COLS="head pressure" train_gino_multi_col.pbs
-# 
-# HYPERPARAMETER EXPERIMENTS:
-# Different learning rates:          qsub -v LEARNING_RATE=1e-3 train_gino_multi_col.pbs
-# Different schedulers:              qsub -v SCHEDULER_TYPE=exponential train_gino_multi_col.pbs
-# Different batch sizes:             qsub -v BATCH_SIZE=256 train_gino_multi_col.pbs
-# Different loss weights:            qsub -v LAMBDA_CONC_FOCUS=0.7 train_gino_multi_col.pbs
-# Combined changes:                  qsub -v "LEARNING_RATE=2e-4,BATCH_SIZE=64,GRAD_CLIP_NORM=2.0" train_gino_multi_col.pbs
-# 
-# MANUAL EXPERIMENT NAMING:
-# Custom experiment name:            qsub -v EXPERIMENT_NAME=my_custom_experiment train_gino_multi_col.pbs
-# Resume specific experiment:        qsub -v "EXPERIMENT_NAME=exp_lr1e3_exp_bs256" train_gino_multi_col.pbs
-# 
-# EXAMPLES:
-# - Default (2 vars, lr=5e-4, cosine, bs=128): 
-#   RESULTS_BASE_DIR/multi_col/mass_conc_head/exp_lr5e4_cos_bs128/
-# - All 3 variables:                  
-#   RESULTS_BASE_DIR/multi_col/mass_conc_head_press/exp_lr5e4_cos_bs128/
-# - High LR experiment:               
-#   RESULTS_BASE_DIR/multi_col/mass_conc_head/exp_lr1e3_cos_bs128/
-# - Large batch experiment:           
-#   RESULTS_BASE_DIR/multi_col/mass_conc_head/exp_lr5e4_cos_bs256/
-# 
-# You can also edit the variables below to change the default behavior
+# Usage examples:
+#   qsub -v CONFIG=default hpc/train_gino_multi_col.pbs
+#   qsub -v CONFIG=high_lr hpc/train_gino_multi_col.pbs
+#   qsub -v CONFIG=three_vars hpc/train_gino_multi_col.pbs
+#   qsub -v "CONFIG=custom,ARGS=--epochs 100" hpc/train_gino_multi_col.pbs
+#   qsub -v "ARGS=--epochs 50 --batch-size 256" hpc/train_gino_multi_col.pbs  # Uses 'adhoc' config
+#
+# Available configs (see hpc/configs/):
+#   - default      : Standard training with mass_concentration + head
+#   - high_lr      : Experiment with higher learning rate
+#   - large_batch  : Experiment with larger batch size
+#   - three_vars   : Train on all three variables
+#   - long_horizon : Longer prediction window
+#   - resume_*     : Resume from specific config's latest checkpoint
 
-
-# Change to the directory from which the job was submitted
 cd $PBS_O_WORKDIR/..
 
-# Set up variables
-RESULTS_BASE_DIR="${RESULTS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO/}"
+# Environment
 PYTHON_ENV="/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python"
-BASE_DATA_DIR="/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density/"
+RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO"
 
-# Training parameters (improved for better convergence)
-# These can be overridden from command line using qsub -v
-EPOCHS="${EPOCHS:-40}"
-BATCH_SIZE="${BATCH_SIZE:-128}"
-CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-10}"
-INPUT_WINDOW="${INPUT_WINDOW:-5}"
-OUTPUT_WINDOW="${OUTPUT_WINDOW:-5}"
+# Determine config name (defaults to 'adhoc' if not specified)
+CONFIG_NAME="${CONFIG:-adhoc}"
 
-# Multi-column specific: TARGET_COLS is a space-separated list
-# Default: train on mass_concentration and head
-TARGET_COLS="${TARGET_COLS:-mass_concentration head}"
-
-# Improved hyperparameters for better convergence
-# These can also be overridden from command line
-LEARNING_RATE="${LEARNING_RATE:-5e-4}"
-LR_GAMMA="${LR_GAMMA:-0.98}"
-LR_SCHEDULER_INTERVAL="${LR_SCHEDULER_INTERVAL:-10}"
-GRAD_CLIP_NORM="${GRAD_CLIP_NORM:-1.0}"
-SCHEDULER_TYPE="${SCHEDULER_TYPE:-cosine}"
-
-# Variance-aware loss parameters
-LAMBDA_CONC_FOCUS="${LAMBDA_CONC_FOCUS:-0.5}"
-
-# Control resuming behavior - set to "true" to resume from checkpoint, "false" to start fresh
-# This can be overridden from command line: qsub -v RESUME_TRAINING=false train_gino_multi_col.pbs
-RESUME_TRAINING="${RESUME_TRAINING:-true}"
-
-# Run selection for resuming training
-# RUN_NAME can be set to resume from a specific run (e.g., gino_multi_20251001_153951)
-# If not set, uses the most recent run with a valid checkpoint
-RUN_NAME="${RUN_NAME:-}"
-
-# Experiment naming and management
-# EXPERIMENT_NAME can be set manually or auto-generated from hyperparameters
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-}"
-
-# Function to create a short identifier for target columns
-create_target_cols_id() {
-    local cols="$1"
-    local id=""
-    
-    for col in $cols; do
-        case "$col" in
-            mass_concentration)
-                id="${id}_mass_conc"
-                ;;
-            head)
-                id="${id}_head"
-                ;;
-            pressure)
-                id="${id}_press"
-                ;;
-            *)
-                # For unknown columns, use first 4 chars
-                id="${id}_${col:0:4}"
-                ;;
-        esac
-    done
-    
-    # Remove leading underscore
-    echo "${id:1}"
-}
-
-# Function to generate experiment name from hyperparameters
-generate_experiment_name() {
-    local lr_clean=$(echo "$LEARNING_RATE" | sed 's/e-0*/e/')  # Clean up scientific notation
-    local scheduler_short="${SCHEDULER_TYPE:0:3}"  # First 3 letters (cos/exp)
-    local name="exp_lr${lr_clean}_${scheduler_short}_bs${BATCH_SIZE}"
-    
-    # Add gradient clipping if not default
-    if [ "$GRAD_CLIP_NORM" != "1.0" ]; then
-        local clip_clean=$(echo "$GRAD_CLIP_NORM" | sed 's/\.0$//')
-        name="${name}_clip${clip_clean}"
-    fi
-    
-    # Add LR gamma if not default (for exponential scheduler)
-    if [ "$SCHEDULER_TYPE" = "exponential" ] && [ "$LR_GAMMA" != "0.98" ]; then
-        local gamma_clean=$(echo "$LR_GAMMA" | sed 's/0\.//')
-        name="${name}_g${gamma_clean}"
-    fi
-    
-    # Add window sizes if not default
-    if [ "$INPUT_WINDOW" != "5" ] || [ "$OUTPUT_WINDOW" != "5" ]; then
-        name="${name}_win${INPUT_WINDOW}_out${OUTPUT_WINDOW}"
-    fi
-    
-    echo "$name"
-}
-
-# Set experiment name (auto-generate if not provided)
-if [ -z "$EXPERIMENT_NAME" ]; then
-    EXPERIMENT_NAME=$(generate_experiment_name)
-fi
-
-# Create target columns identifier for directory structure
-TARGET_COLS_ID=$(create_target_cols_id "$TARGET_COLS")
-
-# Create experiment-specific results directory structure
-# Structure: RESULTS_BASE_DIR/multi_col/TARGET_COLS_ID/EXPERIMENT_NAME/
-MULTI_COL_RESULTS_DIR="$RESULTS_BASE_DIR/multi_col"
-TARGET_RESULTS_DIR="$MULTI_COL_RESULTS_DIR/$TARGET_COLS_ID"
-EXPERIMENT_DIR="$TARGET_RESULTS_DIR/$EXPERIMENT_NAME"
+# Create config-specific results directory
+CONFIG_RESULTS_DIR="${RESULTS_BASE_DIR}/${CONFIG_NAME}"
+mkdir -p "$CONFIG_RESULTS_DIR"
 
 echo "=========================================="
-echo "GINO Multi-Column Training Configuration"
+echo "GINO Training Job"
 echo "=========================================="
-echo "Target columns: $TARGET_COLS"
-echo "Target columns ID: $TARGET_COLS_ID"
-echo "Experiment: $EXPERIMENT_NAME"
-echo "Experiment directory: $EXPERIMENT_DIR"
-echo ""
-echo "Hyperparameters:"
-echo "  - Learning rate: $LEARNING_RATE"
-echo "  - Scheduler: $SCHEDULER_TYPE"
-echo "  - Batch size: $BATCH_SIZE"
-echo "  - Gradient clip norm: $GRAD_CLIP_NORM"
-echo "  - Input window: $INPUT_WINDOW"
-echo "  - Output window: $OUTPUT_WINDOW"
-echo "  - Epochs: $EPOCHS"
+echo "Config: $CONFIG_NAME"
+echo "Results directory: $CONFIG_RESULTS_DIR"
+echo "Job ID: $PBS_JOBID"
+echo "Start time: $(date)"
 echo "=========================================="
 
-# Function to list available runs for an experiment
-list_available_runs() {
-    local exp_dir="$1"
-    if [ -d "$exp_dir" ]; then
-        echo "Available runs for experiment '$EXPERIMENT_NAME':"
-        echo "----------------------------------------"
-        for run_dir in $(find "$exp_dir" -maxdepth 1 -type d -name "gino_multi_*" | sort); do
-            local run_name=$(basename "$run_dir")
-            local checkpoint_path="$run_dir/checkpoints/latest_checkpoint.pth"
-            local has_checkpoint="No"
-            local checkpoint_time=""
-            if [ -f "$checkpoint_path" ]; then
-                has_checkpoint="Yes"
-                checkpoint_time=$(date -r "$checkpoint_path" "+%Y-%m-%d %H:%M:%S")
-            fi
-            echo "Run: $run_name"
-            echo "  - Path: $run_dir"
-            echo "  - Has checkpoint: $has_checkpoint"
-            if [ -n "$checkpoint_time" ]; then
-                echo "  - Last checkpoint: $checkpoint_time"
-            fi
-            echo "----------------------------------------"
-        done
-    fi
-}
-
-# Check for existing checkpoint to resume from (only if RESUME_TRAINING is true)
-LATEST_CHECKPOINT=""
-SELECTED_RUN_DIR=""
-if [ "$RESUME_TRAINING" = "true" ]; then
-    if [ -d "$EXPERIMENT_DIR" ]; then
-        # List all available runs
-        list_available_runs "$EXPERIMENT_DIR"
-        
-        if [ -n "$RUN_NAME" ]; then
-            # Use specified run if RUN_NAME is provided
-            SELECTED_RUN_DIR="$EXPERIMENT_DIR/$RUN_NAME"
-            if [ ! -d "$SELECTED_RUN_DIR" ]; then
-                echo "Error: Specified run '$RUN_NAME' not found in experiment '$EXPERIMENT_NAME'"
-                exit 1
-            fi
-            echo "Using specified run: $RUN_NAME"
-        else
-            # Find the most recent training run within this experiment
-            SELECTED_RUN_DIR=$(find "$EXPERIMENT_DIR" -maxdepth 1 -type d -name "gino_multi_*" | sort | tail -1)
-            if [ -n "$SELECTED_RUN_DIR" ]; then
-                echo "Using most recent run: $(basename "$SELECTED_RUN_DIR")"
-            fi
-        fi
-        
-        # Check for checkpoint in selected run
-        if [ -n "$SELECTED_RUN_DIR" ]; then
-            CHECKPOINT_PATH="$SELECTED_RUN_DIR/checkpoints/latest_checkpoint.pth"
-            if [ -f "$CHECKPOINT_PATH" ]; then
-                LATEST_CHECKPOINT="$CHECKPOINT_PATH"
-                echo "Found checkpoint: $LATEST_CHECKPOINT"
-                echo "Last modified: $(date -r "$LATEST_CHECKPOINT" "+%Y-%m-%d %H:%M:%S")"
-                echo "Resuming training from checkpoint..."
-            else
-                echo "No checkpoint found in selected run. Starting new training..."
-            fi
-        fi
+# Load config if specified, otherwise use command line args
+if [ "$CONFIG_NAME" != "adhoc" ]; then
+    CONFIG_FILE="hpc/configs/${CONFIG_NAME}.sh"
+    if [ -f "$CONFIG_FILE" ]; then
+        echo "Loading configuration from: $CONFIG_FILE"
+        source "$CONFIG_FILE"
+        echo "Configuration loaded successfully"
     else
-        echo "RESUME_TRAINING=true but experiment directory '$EXPERIMENT_NAME' does not exist. Starting new experiment..."
-        # List available experiments for this target column combination
-        if [ -d "$TARGET_RESULTS_DIR" ]; then
-            echo "Available experiments for target columns '$TARGET_COLS_ID':"
-            find "$TARGET_RESULTS_DIR" -maxdepth 1 -type d -name "exp_*" | sed 's|.*/||' | sort
-        fi
-        
-        # List available target column combinations
-        if [ -d "$MULTI_COL_RESULTS_DIR" ]; then
-            echo ""
-            echo "Available target column combinations:"
-            find "$MULTI_COL_RESULTS_DIR" -maxdepth 1 -type d ! -path "$MULTI_COL_RESULTS_DIR" | sed 's|.*/||' | sort
-        fi
+        echo "Error: Config file $CONFIG_FILE not found"
+        echo "Available configs:"
+        ls -1 hpc/configs/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
+        exit 1
     fi
 else
-    echo "RESUME_TRAINING=false. Starting fresh training for experiment '$EXPERIMENT_NAME'..."
+    echo "Using ad-hoc configuration (no config file)"
+    TRAIN_ARGS="${ARGS:-}"
 fi
 
-# Use selected run directory for resuming
-LATEST_RESULTS_DIR="$SELECTED_RUN_DIR"
+# Append results directory to training args (let script create timestamped subdirectory)
+TRAIN_ARGS="$TRAIN_ARGS --results-dir $CONFIG_RESULTS_DIR"
 
-# Build the training command with improved hyperparameters
-# Note: TARGET_COLS should be passed as individual arguments (space-separated)
-TRAIN_CMD="$PYTHON_ENV train_gino_on_patches_multi_col.py \
-    --epochs $EPOCHS \
-    --batch-size $BATCH_SIZE \
-    --base-data-dir $BASE_DATA_DIR \
-    --patch-data-subdir filter_patch \
-    --input-window-size $INPUT_WINDOW \
-    --output-window-size $OUTPUT_WINDOW \
-    --target-cols $TARGET_COLS \
-    --save-checkpoint-every $CHECKPOINT_EVERY \
-    --learning-rate $LEARNING_RATE \
-    --lr-gamma $LR_GAMMA \
-    --lr-scheduler-interval $LR_SCHEDULER_INTERVAL \
-    --grad-clip-norm $GRAD_CLIP_NORM \
-    --scheduler-type $SCHEDULER_TYPE \
-    --lambda-conc-focus $LAMBDA_CONC_FOCUS \
-    --results-dir $EXPERIMENT_DIR" 
+# Display final command
+echo ""
+echo "Training arguments:"
+echo "$TRAIN_ARGS"
+echo ""
+echo "=========================================="
 
-# Add resume parameter if checkpoint exists and use the existing results directory
-if [ -n "$LATEST_CHECKPOINT" ]; then
-    if [ -n "$LATEST_RESULTS_DIR" ]; then
-        TRAIN_CMD="$TRAIN_CMD --resume-from $LATEST_CHECKPOINT --results-dir $LATEST_RESULTS_DIR"
-        echo "Resuming training in existing directory: $LATEST_RESULTS_DIR"
-    else
-        TRAIN_CMD="$TRAIN_CMD --resume-from $LATEST_CHECKPOINT"
-        echo "Warning: Could not find existing results directory, will create new one"
-    fi
+# Execute training
+$PYTHON_ENV train_gino_on_patches_multi_col_refactored.py $TRAIN_ARGS
+
+EXIT_CODE=$?
+
+echo ""
+echo "=========================================="
+echo "Training completed"
+echo "Exit code: $EXIT_CODE"
+echo "End time: $(date)"
+echo "Results saved under: $CONFIG_RESULTS_DIR"
+echo "=========================================="
+
+# List runs in this config directory
+if [ -d "$CONFIG_RESULTS_DIR" ]; then
+    echo ""
+    echo "Runs in this config:"
+    ls -1t "$CONFIG_RESULTS_DIR" | grep "^training_" | head -5
 fi
 
-# Log the command being executed
-echo ""
-echo "=========================================="
-echo "Executing command:"
-echo "$TRAIN_CMD"
-echo "=========================================="
-echo "Starting time: $(date)"
-echo ""
-
-# Run the training script
-eval $TRAIN_CMD
-
-echo ""
-echo "=========================================="
-echo "Training completed at: $(date)"
-echo "Results saved to: $EXPERIMENT_DIR"
-echo "=========================================="
+exit $EXIT_CODE
