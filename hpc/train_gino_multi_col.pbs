@@ -27,6 +27,7 @@
 # Different learning rates:          qsub -v LEARNING_RATE=1e-3 train_gino_multi_col.pbs
 # Different schedulers:              qsub -v SCHEDULER_TYPE=exponential train_gino_multi_col.pbs
 # Different batch sizes:             qsub -v BATCH_SIZE=256 train_gino_multi_col.pbs
+# Different loss weights:            qsub -v LAMBDA_CONC_FOCUS=0.7 train_gino_multi_col.pbs
 # Combined changes:                  qsub -v "LEARNING_RATE=2e-4,BATCH_SIZE=64,GRAD_CLIP_NORM=2.0" train_gino_multi_col.pbs
 # 
 # MANUAL EXPERIMENT NAMING:
@@ -73,6 +74,9 @@ LR_GAMMA="${LR_GAMMA:-0.98}"
 LR_SCHEDULER_INTERVAL="${LR_SCHEDULER_INTERVAL:-10}"
 GRAD_CLIP_NORM="${GRAD_CLIP_NORM:-1.0}"
 SCHEDULER_TYPE="${SCHEDULER_TYPE:-cosine}"
+
+# Variance-aware loss parameters
+LAMBDA_CONC_FOCUS="${LAMBDA_CONC_FOCUS:-0.5}"
 
 # Control resuming behavior - set to "true" to resume from checkpoint, "false" to start fresh
 # This can be overridden from command line: qsub -v RESUME_TRAINING=false train_gino_multi_col.pbs
@@ -272,7 +276,8 @@ TRAIN_CMD="$PYTHON_ENV train_gino_on_patches_multi_col.py \
     --lr-scheduler-interval $LR_SCHEDULER_INTERVAL \
     --grad-clip-norm $GRAD_CLIP_NORM \
     --scheduler-type $SCHEDULER_TYPE \
-    --results-dir $EXPERIMENT_DIR"
+    --lambda-conc-focus $LAMBDA_CONC_FOCUS \
+    --results-dir $EXPERIMENT_DIR" 
 
 # Add resume parameter if checkpoint exists and use the existing results directory
 if [ -n "$LATEST_CHECKPOINT" ]; then

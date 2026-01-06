@@ -53,7 +53,10 @@ class GWPatchDatasetMultiCol(Dataset):
             dataset=dataset,
             target_col_indices=target_col_indices
         )
-
+        
+        # Compute weights based on temporal variances across all patches
+        patch_data = self.compute_weights(patch_data)
+        
         # Create input/output sequences from patch data
         patch_data = self.create_sequence_data(
             patch_data,
@@ -100,7 +103,8 @@ class GWPatchDatasetMultiCol(Dataset):
                 coords.append({
                     'patch_id': patch['patch_id'],
                     'core_coords': patch['core_coords'],
-                    'ghost_coords': patch['ghost_coords']
+                    'ghost_coords': patch['ghost_coords'],
+                    'weights': patch['weights']  # [n_points]
                 })
                 
                 # Extract sequences: [window_size, n_points, n_target_cols]
@@ -183,6 +187,12 @@ class GWPatchDatasetMultiCol(Dataset):
 
             # Extract patch_id from directory name
             patch_id = int(patch_dir.split('_')[-1])
+            
+            # Compute temporal variances for mass concentration (before any transforms)
+            # Use training data only for variance computation
+            core_obs_train = core_obs[:train_idx]  # [train_timesteps, n_points, n_cols]
+            # Variance of mass concentration (index 0) across time for each node
+            temporal_variances = np.var(core_obs_train[..., 0], axis=0)  # [n_points]
 
             # Apply coordinate and observation transforms if provided
             if self.coord_transform is not None:
@@ -210,7 +220,8 @@ class GWPatchDatasetMultiCol(Dataset):
                     'core_coords': core_coords,
                     'core_obs': core_obs[:train_idx],
                     'ghost_coords': ghost_coords,
-                    'ghost_obs': ghost_obs[:train_idx]
+                    'ghost_obs': ghost_obs[:train_idx],
+                    'temporal_variances': temporal_variances  # [n_points]
                 })
             else:
                 patch_data.append({
@@ -218,9 +229,64 @@ class GWPatchDatasetMultiCol(Dataset):
                     'core_coords': core_coords,
                     'core_obs': core_obs[train_idx:],
                     'ghost_coords': ghost_coords,
-                    'ghost_obs': ghost_obs[train_idx:]
+                    'ghost_obs': ghost_obs[train_idx:],
+                    'temporal_variances': temporal_variances  # [n_points] - same for val
                 })
 
+        return patch_data
+    
+    def compute_weights(self, patch_data, alpha=0.3, beta=2.0):
+        """
+        Compute variance-aware weights for each node across all patches.
+        
+        Weights are computed based on temporal variances of mass concentration,
+        with higher variance (more dynamic) regions receiving higher weights.
+        
+        Args:
+            patch_data (list): List of patch dictionaries containing temporal_variances
+            alpha (float): Base weight for low-variance nodes (0 < alpha < 1)
+            beta (float): Exponent controlling emphasis on high-variance nodes
+            
+        Returns:
+            list: Updated patch_data with 'weights' key added to each patch
+        """
+        # Collect all temporal variances across all patches
+        all_variances = []
+        for patch in patch_data:
+            all_variances.append(patch['temporal_variances'])
+        
+        # Concatenate all variances to get dataset-level statistics
+        all_variances = np.concatenate(all_variances, axis=0)  # [total_nodes_across_patches]
+        
+        # Compute mean variance across entire dataset
+        mean_variance = np.mean(all_variances)
+        max_variance = np.max(all_variances)
+        clip_variance = np.percentile(all_variances, 99) 
+        eps = 1e-6  # Avoid division by zero
+        
+        # Compute weights for each patch
+        for patch in patch_data:
+            variances = patch['temporal_variances']
+
+            # Clip variances to reduce outlier impact
+            var_clip = np.clip(variances, 0.0, clip_variance)
+
+            # Normalize clipped variances
+            var_norm = var_clip / (max_variance + eps)
+
+            # Compute weights using the specified formula
+            weights = alpha + (1 - alpha) * (var_norm ** beta)
+
+            # Normalize weights to have mean 1.0
+            weights /= np.mean(weights)
+            
+            # Store weights in patch data
+            patch['weights'] = weights.astype(np.float32)  # [n_points]
+        
+        print(f"Computed variance-aware weights for {len(patch_data)} patches")
+        print(f"Dataset variance range: [{all_variances.min():.6f}, {all_variances.max():.6f}]")
+        print(f"Dataset mean variance: {mean_variance:.6f}")
+        
         return patch_data
 
     def __len__(self):

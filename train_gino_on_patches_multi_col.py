@@ -583,6 +583,12 @@ def _make_collate_fn(args):
         x = torch.cat(x_list, dim=0)  # [B, N_points, input_window_size * n_target_cols]
         y = torch.cat(y_list, dim=0)  # [B, N_points, output_window_size * n_target_cols]
 
+        # Extract weights (same for all samples in the batch since they're from the same patch)
+        weights = batch_samples[0]['weights']  # [N_points]
+        if not isinstance(weights, torch.Tensor):
+            weights = torch.from_numpy(weights)
+        weights = weights.float()
+
         # Return batch dictionary
         batch = {
             'point_coords': point_coords,      # [N_points, 3]
@@ -590,6 +596,7 @@ def _make_collate_fn(args):
             'x': x,                           # [B, N_points, input_window_size * n_target_cols]
             'y': y,                           # [B, N_points, output_window_size * n_target_cols]
             'core_len': len(core_coords),     # Number of core points (for loss masking)
+            'weights': weights,               # [N_points] - pre-computed variance-aware weights
         }
         return batch
     return collate_fn
@@ -598,17 +605,18 @@ def _make_collate_fn(args):
 def evaluate_model_on_patches(val_loader, model, loss_fn, args):
     """Evaluate model on validation loader.
 
-    Computes relative L2 loss on core points across validation batches.
+    Computes variance-aware loss on core points across validation batches.
     Ghost points are excluded from loss computation to avoid boundary artifacts.
+    Uses pre-computed weights from the dataset.
     
     Args:
         val_loader: DataLoader for validation data
         model: GINO model to evaluate
-        loss_fn: Loss function (typically LpLoss)
+        loss_fn: Loss function (variance-aware multi-column loss)
         args: Argument namespace containing device info
         
     Returns:
-        float: Average validation loss across all batches
+        tuple: (avg_val_loss, avg_global_loss, avg_conc_var_loss)
     """
     model.eval()  # Set model to evaluation mode
     total_loss = 0.0
@@ -644,9 +652,13 @@ def evaluate_model_on_patches(val_loader, model, loss_fn, args):
             core_len = batch['core_len']
             core_output = outputs[:, :core_len]
             core_target = y[:, :core_len]
+            
+            # Extract weights for core points only
+            weights = batch['weights'].to(args.device)
+            core_weights = weights[:core_len]
 
-            # Compute loss on core points only
-            loss, global_loss, conc_var_loss = loss_fn(core_output, core_target)
+            # Compute loss on core points only with pre-computed weights
+            loss, global_loss, conc_var_loss = loss_fn(core_output, core_target, core_weights)
             
             # Dynamically infer batch size for loss computation
             batch_size = x.shape[0]
@@ -1070,19 +1082,24 @@ def plot_training_curves(train_losses, train_global_losses, train_conc_var_losse
 def variance_aware_multicol_loss(
     y_pred,
     y_true,
+    weights,
     output_window_size,
     target_cols,
     lambda_conc_focus=0.5,
-    alpha=0.3,
-    beta=2.0,
 ):
     """
-    y_pred, y_true: [B, N_points, T_out * C]
-    output_window_size: T_out
-    target_cols: list like ['mass_concentration', 'head']
-    lambda_conc_focus: how much extra weight to put on variance-aware conc loss
-    alpha: base weight for low-variance nodes (0<alpha<1)
-    beta: exponent controlling how sharply we emphasise high-variance nodes
+    Compute variance-aware multi-column loss using pre-computed weights from the dataset.
+    
+    Args:
+        y_pred: Predicted values [B, N_points, T_out * C]
+        y_true: Target values [B, N_points, T_out * C]
+        weights: Pre-computed variance-aware weights [N_points]
+        output_window_size: T_out (number of output timesteps)
+        target_cols: List of target column names like ['mass_concentration', 'head']
+        lambda_conc_focus: Weight factor for concentration-focused loss (0 to 1)
+    
+    Returns:
+        tuple: (total_loss, global_loss, conc_var_loss)
     """
 
     B, N, TC = y_pred.shape
@@ -1100,26 +1117,16 @@ def variance_aware_multicol_loss(
     # ----- 1) global MSE over all variables -----
     global_loss = global_loss_fn(y_pred, y_true)
 
-    # ----- 2) variance-aware term for concentration -----
+    # ----- 2) variance-aware term for concentration using pre-computed weights -----
     conc_idx = target_cols.index('mass_concentration')  # assumes name present
 
     conc_pred = y_pred[..., conc_idx]   # [B, N, T]
     conc_true = y_true[..., conc_idx]   # [B, N, T]
 
-    # node-wise temporal variance (on *normalized* targets)
-    with torch.no_grad():
-        # var over time dimension
-        var_t = conc_true.var(dim=[0, 2], unbiased=False)  # [N]
-        
-        # normalise variance within the batch
-        # (avoid division by tiny mean)
-        var_norm = var_t / (var_t.mean() + 1e-6)
-
-        # map to weights in [alpha, ~1] with emphasis on high variance
-        #   w = alpha + (1-alpha) * var_norm^beta, then renormalise mean to 1
-        weights = alpha + (1.0 - alpha) * (var_norm ** beta)
-        weights = weights / (weights.mean() + 1e-6)   # keep gradients stable
-        
+    # Use pre-computed weights from the dataset
+    # These weights are computed based on temporal variances across the full dataset
+    # and are already normalized to have mean 1.0
+    weights = weights.to(y_pred.device)  # Ensure weights are on the same device
 
     conc_l2 = local_loss_fn(conc_pred, conc_true)        # [N]
     conc_var_loss = (weights * conc_l2).mean()
@@ -1177,16 +1184,15 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
     print(f"Train loader length: {len(train_loader)}")
     print(f"Val loader length: {len(val_loader)}")
 
-    # Use relative L2 loss with appropriate dimensionality
+    # Use variance-aware loss that leverages pre-computed weights from the dataset
     # loss_fn = LpLoss(d=1, p=2, reduce_dims=[0, 1], reductions='mean')
-    loss_fn = lambda y_pred, y_true: variance_aware_multicol_loss(
+    loss_fn = lambda y_pred, y_true, weights: variance_aware_multicol_loss(
         y_pred, 
-        y_true, 
+        y_true,
+        weights,
         output_window_size=args.output_window_size,
         target_cols=args.target_cols,
         lambda_conc_focus=args.lambda_conc_focus,
-        alpha=args.var_aware_alpha,
-        beta=args.var_aware_beta,
     )
 
     # Initialize training state
@@ -1256,9 +1262,13 @@ def train_gino_on_patches(train_patch_ds, val_patch_ds, model, optimizer, schedu
             core_len = batch['core_len']
             core_output = outputs[:, :core_len]
             core_target = y[:, :core_len]
+            
+            # Extract weights for core points only
+            core_weights = batch['weights'].to(args.device)
+            # core_weights = core_weights[:, :core_len]
 
-            # Compute loss on core points only
-            loss, global_loss, conc_var_loss = loss_fn(core_output, core_target)
+            # Compute loss on core points only with pre-computed weights
+            loss, global_loss, conc_var_loss = loss_fn(core_output, core_target, core_weights)
 
             print(f"DEBUG - Step {step_idx}: Loss={loss.item():.4f}, Global Loss={global_loss.item():.4f}, Conc Variance Loss={conc_var_loss.item():.4f}")
 
