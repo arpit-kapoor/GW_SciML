@@ -8,18 +8,21 @@ with models that have static (non-batched) inputs like point coordinates and que
 import torch
 
 
-class GINODataParallelAdapter(torch.nn.Module):
+class DataParallelAdapter(torch.nn.Module):
     """
-    Thin wrapper to make GINO compatible with DataParallel.
+    Thin wrapper to make neural operator models compatible with DataParallel.
     
-    DataParallel expects to split all inputs along the batch dimension. For GINO,
-    we have both dynamic inputs (x) and static inputs (point_coords, latent_queries)
-    that should be shared across all replicas. This adapter handles the fake batch
-    dimension added to static inputs and strips it before forwarding to the model.
+    DataParallel expects to split all inputs along the batch dimension. For models like
+    GINO and FNOInterpolate, we have both dynamic inputs (x) and static inputs 
+    (point_coords, latent_queries) that should be shared across all replicas. This 
+    adapter handles the fake batch dimension added to static inputs and strips it 
+    before forwarding to the model.
+    
+    Works with: GINO, FNOInterpolate, and other coordinate-based neural operators.
     
     Usage:
-        model = GINO(...)
-        model = GINODataParallelAdapter(model)
+        model = GINO(...)  # or FNOInterpolate(...)
+        model = DataParallelAdapter(model)
         model = torch.nn.DataParallel(model)
     """
     def __init__(self, inner: torch.nn.Module):
@@ -27,10 +30,10 @@ class GINODataParallelAdapter(torch.nn.Module):
         Initialize the adapter.
         
         Args:
-            inner (torch.nn.Module): The actual GINO model to wrap
+            inner (torch.nn.Module): The actual model to wrap (GINO, FNOInterpolate, etc.)
         """
         super().__init__()
-        self.inner = inner  # the actual GINO model
+        self.inner = inner  # the actual model
 
     def forward(self, *, input_geom, latent_queries, x, output_queries):
         """

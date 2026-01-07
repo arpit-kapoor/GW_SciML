@@ -262,3 +262,376 @@ class FNO(nn.Module):
     def n_modes(self, n_modes):
         """Set the number of Fourier modes in each dimension."""
         self._n_modes = n_modes
+
+
+class FNOInterpolate(nn.Module):
+    """
+    FNO with Interpolation-based encoding/decoding.
+    
+    Similar to GINO but uses grid interpolation instead of GNO blocks to map
+    between irregular point clouds and regular grids. The architecture consists of:
+    - Interpolation-based encoding: maps input point cloud to regular grid
+    - FNO processing: processes latent representation on regular grid
+    - Interpolation-based decoding: maps from regular grid to output point cloud
+    
+    This class maintains API compatibility with GINO for seamless integration with
+    existing training scripts and patched datasets.
+    """
+
+    def __init__(
+        self,
+        # Grid configuration
+        latent_grid_size=(16, 16, 16),
+        coord_dim=3,
+        
+        # Input/Output channels
+        in_channels=3,
+        out_channels=1,
+        
+        # Latent features
+        latent_feature_channels=None,
+        
+        # FNO configuration
+        fno_n_layers=4,
+        fno_n_modes=(16, 16, 16),
+        fno_hidden_channels=128,
+        fno_skip_fno_bias=False,
+        fno_fft_norm="forward",
+        fno_rank=1.0,
+        fno_max_n_modes=None,
+        fno_non_linearity=F.gelu,
+        
+        # Lifting/Projection
+        lifting_channels=128,
+        projection_channels=None,
+        
+        # Interpolation settings
+        # interpolation_mode='trilinear',  # 'bilinear' for 2D, 'trilinear' for 3D
+        align_corners=True,
+        padding_mode='border',
+    ):
+        """
+        Parameters
+        ----------
+        latent_grid_size : tuple
+            Size of the regular grid in latent space (e.g., (16, 16, 16) for 3D)
+        coord_dim : int
+            Dimensionality of coordinates (2 or 3)
+        in_channels : int
+            Number of input feature channels
+        out_channels : int
+            Number of output feature channels
+        latent_feature_channels : int, optional
+            Number of additional latent feature channels to concatenate
+        fno_n_layers : int
+            Number of FNO layers
+        fno_n_modes : tuple
+            Number of Fourier modes per dimension
+        fno_hidden_channels : int
+            Hidden channels in FNO
+        fno_skip_fno_bias : bool
+            Whether to use bias in FNO skip connections
+        fno_fft_norm : str
+            FFT normalization mode
+        fno_rank : float
+            Rank for low-rank spectral convolution
+        fno_max_n_modes : tuple, optional
+            Maximum number of modes
+        fno_non_linearity : callable
+            Non-linearity activation function
+        lifting_channels : int
+            Hidden channels in lifting MLP
+        projection_channels : int, optional
+            Hidden channels in projection MLP (defaults to 4 * fno_hidden_channels)
+        interpolation_mode : str
+            Interpolation mode ('bilinear', 'trilinear', 'nearest')
+        align_corners : bool
+            Whether to align corners in grid_sample
+        padding_mode : str
+            Padding mode for grid_sample ('zeros', 'border', 'reflection')
+        """
+        super(FNOInterpolate, self).__init__()
+        
+        self.latent_grid_size = latent_grid_size
+        self.coord_dim = coord_dim
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.latent_feature_channels = latent_feature_channels
+        self.fno_hidden_channels = fno_hidden_channels
+        # self.interpolation_mode = interpolation_mode
+        self.align_corners = align_corners
+        self.padding_mode = padding_mode
+        
+        # Validate coordinate dimension matches grid size
+        assert len(latent_grid_size) == coord_dim, \
+            f"Grid size dimensions {len(latent_grid_size)} must match coord_dim {coord_dim}"
+        
+        # Set interpolation mode - PyTorch's grid_sample uses 'bilinear' for both 2D and 3D
+        # ('bilinear' automatically does trilinear interpolation for 3D grids)
+        self.interpolation_mode = 'bilinear'
+        
+        # Calculate FNO input channels
+        if latent_feature_channels is not None:
+            self.fno_in_channels = in_channels + latent_feature_channels
+        else:
+            self.fno_in_channels = in_channels
+        
+        # Lifting layer
+        self.lifting = MLP(
+            in_channels=self.fno_in_channels,
+            out_channels=fno_hidden_channels,
+            hidden_channels=lifting_channels,
+            n_layers=2,
+            n_dim=coord_dim,
+        )
+        
+        # FNO blocks
+        self.fno_blocks = FNOBlocks(
+            n_layers=fno_n_layers,
+            n_modes=fno_n_modes,
+            hidden_channels=fno_hidden_channels,
+            skip_fno_bias=fno_skip_fno_bias,
+            fft_norm=fno_fft_norm,
+            rank=fno_rank,
+            max_n_modes=fno_max_n_modes,
+            non_linearity=fno_non_linearity,
+        )
+        
+        # Projection layer
+        if projection_channels is None:
+            projection_channels = 4 * fno_hidden_channels
+        
+        self.projection = MLP(
+            in_channels=fno_hidden_channels,
+            out_channels=out_channels,
+            hidden_channels=projection_channels,
+            n_layers=2,
+            n_dim=1,  # Pointwise projection
+            non_linearity=fno_non_linearity,
+        )
+
+    def _normalize_coords(self, coords, input_geom):
+        """
+        Normalize coordinates to [-1, 1] range for grid_sample.
+        
+        Parameters
+        ----------
+        coords : torch.Tensor
+            Coordinates to normalize, shape (batch, n_points, coord_dim) or (n_points, coord_dim)
+        input_geom : torch.Tensor
+            Input geometry defining the bounding box, shape (n_input_points, coord_dim)
+        
+        Returns
+        -------
+        torch.Tensor
+            Normalized coordinates in [-1, 1]
+        """
+        # Calculate bounding box from input geometry
+        min_coords = input_geom.min(dim=0, keepdim=True)[0]  # (1, coord_dim)
+        max_coords = input_geom.max(dim=0, keepdim=True)[0]  # (1, coord_dim)
+        
+        # Normalize to [-1, 1]
+        normalized = 2 * (coords - min_coords) / (max_coords - min_coords + 1e-8) - 1
+        return normalized
+
+    def _interpolate_to_grid(self, points, features, input_geom, latent_queries):
+        """
+        Interpolate point cloud features onto a regular grid using inverse distance weighting
+        or scatter-based aggregation.
+        
+        Parameters
+        ----------
+        points : torch.Tensor
+            Point coordinates, shape (n_points, coord_dim)
+        features : torch.Tensor
+            Point features, shape (batch, n_points, in_channels)
+        input_geom : torch.Tensor
+            Input geometry for normalization
+        latent_queries : torch.Tensor
+            Grid coordinates, shape (grid_size) + (coord_dim,)
+        
+        Returns
+        -------
+        torch.Tensor
+            Gridded features, shape (batch, in_channels, *grid_size)
+        """
+        batch_size = features.shape[0]
+        
+        # Reshape latent_queries to (n_grid_points, coord_dim)
+        grid_coords = latent_queries.reshape(-1, self.coord_dim)
+        
+        # Simple approach: Use nearest neighbor interpolation via broadcasting
+        # For each grid point, find nearest input point and copy its features
+        # This is a simplified version; more sophisticated methods could be used
+        
+        # Compute distances between all grid points and input points
+        # grid_coords: (n_grid, coord_dim), points: (n_points, coord_dim)
+        distances = torch.cdist(grid_coords.unsqueeze(0), points.unsqueeze(0)).squeeze(0)  # (n_grid, n_points)
+        
+        # Find nearest neighbor for each grid point
+        nearest_idx = distances.argmin(dim=1)  # (n_grid,)
+        
+        # Gather features from nearest neighbors
+        # features: (batch, n_points, in_channels)
+        grid_features = features[:, nearest_idx, :]  # (batch, n_grid, in_channels)
+        
+        # Reshape to grid format: (batch, in_channels, *grid_size)
+        grid_features = grid_features.permute(0, 2, 1)  # (batch, in_channels, n_grid)
+        grid_features = grid_features.reshape(batch_size, -1, *self.latent_grid_size)
+        
+        return grid_features
+
+    def _interpolate_from_grid(self, grid_features, output_queries, input_geom):
+        """
+        Interpolate from regular grid to output query points using grid_sample.
+        
+        Parameters
+        ----------
+        grid_features : torch.Tensor
+            Features on regular grid, shape (batch, channels, *grid_size)
+        output_queries : torch.Tensor
+            Output query coordinates, shape (n_out_points, coord_dim) or dict of such tensors
+        input_geom : torch.Tensor
+            Input geometry for coordinate normalization
+        
+        Returns
+        -------
+        torch.Tensor or dict
+            Interpolated features at query points
+        """
+        batch_size = grid_features.shape[0]
+        
+        # Handle dict of output queries
+        if isinstance(output_queries, dict):
+            outputs = {}
+            for key, queries in output_queries.items():
+                queries = queries.squeeze(0) if queries.ndim > 2 else queries
+                normalized_queries = self._normalize_coords(queries, input_geom)
+                outputs[key] = self._grid_sample_points(grid_features, normalized_queries)
+            return outputs
+        else:
+            output_queries = output_queries.squeeze(0) if output_queries.ndim > 2 else output_queries
+            normalized_queries = self._normalize_coords(output_queries, input_geom)
+            return self._grid_sample_points(grid_features, normalized_queries)
+
+    def _grid_sample_points(self, grid_features, normalized_coords):
+        """
+        Sample from grid at specified normalized coordinates.
+        
+        Parameters
+        ----------
+        grid_features : torch.Tensor
+            Features on grid, shape (batch, channels, *grid_size)
+        normalized_coords : torch.Tensor
+            Normalized coordinates in [-1, 1], shape (n_points, coord_dim)
+        
+        Returns
+        -------
+        torch.Tensor
+            Sampled features, shape (batch, n_points, channels)
+        """
+        batch_size = grid_features.shape[0]
+        n_points = normalized_coords.shape[0]
+        
+        # Prepare grid for grid_sample
+        # grid_sample expects coordinates in format:
+        # 2D: (batch, H, W, 2), 3D: (batch, D, H, W, 3)
+        if self.coord_dim == 2:
+            # Reshape to (batch, n_points, 1, 2)
+            sample_grid = normalized_coords.unsqueeze(0).unsqueeze(2)  # (1, n_points, 1, 2)
+            sample_grid = sample_grid.expand(batch_size, -1, -1, -1)
+        elif self.coord_dim == 3:
+            # Reshape to (batch, n_points, 1, 1, 3)
+            sample_grid = normalized_coords.unsqueeze(0).unsqueeze(2).unsqueeze(3)  # (1, n_points, 1, 1, 3)
+            sample_grid = sample_grid.expand(batch_size, -1, -1, -1, -1)
+        
+        # Sample from grid
+        sampled = F.grid_sample(
+            grid_features,
+            sample_grid,
+            mode=self.interpolation_mode,
+            padding_mode=self.padding_mode,
+            align_corners=self.align_corners
+        )
+        
+        # Reshape output: (batch, channels, n_points, 1, ...) -> (batch, n_points, channels)
+        if self.coord_dim == 2:
+            sampled = sampled.squeeze(-1)  # (batch, channels, n_points)
+        elif self.coord_dim == 3:
+            sampled = sampled.squeeze(-1).squeeze(-1)  # (batch, channels, n_points)
+        
+        sampled = sampled.permute(0, 2, 1)  # (batch, n_points, channels)
+        
+        return sampled
+
+    def forward(self, input_geom, latent_queries, output_queries, x=None, latent_features=None, **kwargs):
+        """
+        Forward pass through FNOInterpolate.
+        
+        Parameters
+        ----------
+        input_geom : torch.Tensor
+            Input geometry/point cloud coordinates, shape (n_input_points, coord_dim) or (1, n_input_points, coord_dim)
+        latent_queries : torch.Tensor
+            Regular grid coordinates for latent space, shape (*grid_size, coord_dim) or (1, *grid_size, coord_dim)
+        output_queries : torch.Tensor or dict
+            Output query point coordinates, shape (n_out_points, coord_dim) or dict of such tensors
+        x : torch.Tensor, optional
+            Input features on input_geom points, shape (batch, n_input_points, in_channels)
+        latent_features : torch.Tensor, optional
+            Additional latent features on grid, shape (batch, *grid_size, latent_feature_channels)
+        
+        Returns
+        -------
+        torch.Tensor or dict
+            Output features at query points, shape (batch, n_out_points, out_channels)
+        """
+        if x is None:
+            batch_size = 1
+        else:
+            batch_size = x.shape[0]
+        
+        # Validate latent features
+        if latent_features is not None:
+            assert self.latent_feature_channels is not None, \
+                "if passing latent features, latent_feature_channels must be set."
+            assert latent_features.shape[-1] == self.latent_feature_channels
+            
+            if latent_features.shape[0] != batch_size:
+                if latent_features.shape[0] == 1:
+                    latent_features = latent_features.repeat(batch_size, *[1]*(latent_features.ndim-1))
+        
+        # Squeeze batch dimensions if present
+        input_geom = input_geom.squeeze(0)
+        latent_queries = latent_queries.squeeze(0)
+        
+        # Interpolate input features to regular grid
+        grid_features = self._interpolate_to_grid(input_geom, x, input_geom, latent_queries)
+        
+        # Concatenate with latent features if provided
+        if latent_features is not None:
+            # Reshape latent_features to (batch, channels, *grid_size)
+            latent_features = latent_features.permute(0, len(latent_features.shape)-1, *list(range(1, len(latent_features.shape)-1)))
+            grid_features = torch.cat([grid_features, latent_features], dim=1)
+        
+        # Process through FNO
+        grid_features = self.lifting(grid_features)
+        grid_features = self.fno_blocks(grid_features)
+        
+        # Interpolate from grid to output queries
+        output_features = self._interpolate_from_grid(grid_features, output_queries, input_geom)
+        
+        # Apply projection
+        if isinstance(output_features, dict):
+            for key in output_features.keys():
+                # Permute to (batch, channels, n_points) for projection
+                out = output_features[key].permute(0, 2, 1)
+                out = self.projection(out)
+                output_features[key] = out.permute(0, 2, 1)
+        else:
+            # Permute to (batch, channels, n_points) for projection
+            output_features = output_features.permute(0, 2, 1)
+            output_features = self.projection(output_features)
+            output_features = output_features.permute(0, 2, 1)
+        
+        return output_features
