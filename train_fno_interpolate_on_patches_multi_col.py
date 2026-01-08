@@ -76,11 +76,11 @@ except Exception as _e:
 
 def add_fno_interpolate_model_args(parser):
     """Add FNOInterpolate-specific model arguments to the parser."""
-    parser.add_argument('--interpolation_mode', type=str, default='bilinear',
-                        help='Interpolation mode for grid_sample (bilinear, nearest, bicubic)')
-    parser.add_argument('--align_corners', type=bool, default=False,
+    parser.add_argument('--align-corners', action='store_true', default=False,
+                        dest='align_corners',
                         help='Whether to align corners in grid_sample interpolation')
-    parser.add_argument('--padding_mode', type=str, default='border',
+    parser.add_argument('--padding-mode', type=str, default='border',
+                        dest='padding_mode',
                         help='Padding mode for grid_sample (zeros, border, reflection)')
     return parser
 
@@ -90,24 +90,15 @@ def define_model_parameters(args):
     args.coord_dim = 3
     args.n_target_cols = len(args.target_cols)
     
-    # Interpolation parameters (instead of GNO)
-    # These are now passed from argparse
-    
     # FNO configuration (same as GINO)
     args.fno_n_layers = 4
     args.fno_n_modes = (12, 12, 8)
     args.fno_hidden_channels = 64
     args.lifting_channels = 64
-    
-    # Projection configuration
     args.projection_channel_ratio = 2
-    
-    # Input/output channels
     args.in_channels = args.input_window_size * args.n_target_cols
     args.out_channels = args.output_window_size * args.n_target_cols
-    
-    # Latent grid dimensions
-    args.latent_grid_size = (32, 32, 24)
+    args.latent_query_dims = (32, 32, 24)
     
     return args
 
@@ -115,7 +106,7 @@ def define_model_parameters(args):
 def define_fno_interpolate_model(args):
     """Instantiate FNOInterpolate model with configured parameters."""
     model = FNOInterpolate(
-        latent_grid_size=args.latent_grid_size,
+        latent_query_dims=args.latent_query_dims,
         coord_dim=args.coord_dim,
         in_channels=args.in_channels,
         out_channels=args.out_channels,
@@ -124,7 +115,6 @@ def define_fno_interpolate_model(args):
         fno_n_modes=args.fno_n_modes,
         fno_hidden_channels=args.fno_hidden_channels,
         fno_n_layers=args.fno_n_layers,
-        interpolation_mode=args.interpolation_mode,
         align_corners=args.align_corners,
         padding_mode=args.padding_mode,
     ).to(args.device)

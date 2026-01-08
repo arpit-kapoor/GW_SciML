@@ -29,6 +29,14 @@ from .visualization import (
     create_3d_spatial_plots,
     create_video_from_images,
     create_all_visualizations,
+    select_nodes_by_variance,
+)
+
+from .metrics import (
+    compute_kge,
+    denormalize_observations,
+    compute_metrics,
+    save_metrics,
 )
 
 __all__ = [
@@ -44,10 +52,17 @@ __all__ = [
     'save_metadata',
     'organize_and_save_results',
     
+    # Metrics
+    'compute_kge',
+    'denormalize_observations',
+    'compute_metrics',
+    'save_metrics',
+    
     # Visualization
     'create_scatter_comparison_plots',
     'create_timeseries_comparison_plots',
     'create_error_analysis_plots',
+    'select_nodes_by_variance',
     'create_3d_spatial_plots',
     'create_video_from_images',
     'create_all_visualizations',

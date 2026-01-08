@@ -24,8 +24,8 @@ if [ $# -eq 0 ]; then
     echo "  ./submit.sh adhoc --epochs 50 ...      # Custom arguments"
     echo ""
     echo "Available configs:"
-    if [ -d "$SCRIPT_DIR/configs" ]; then
-        for config in "$SCRIPT_DIR/configs"/*.sh; do
+    if [ -d "$SCRIPT_DIR/configs/gino" ]; then
+        for config in "$SCRIPT_DIR/configs/gino"/*.sh; do
             if [ -f "$config" ]; then
                 config_name=$(basename "$config" .sh)
                 # Extract comment from config file (first line after shebang)
@@ -34,7 +34,7 @@ if [ $# -eq 0 ]; then
             fi
         done
     else
-        echo "  (no configs directory found)"
+        echo "  (no gino configs directory found)"
     fi
     echo ""
     echo "Directory structure: results/GINO/[config_name]/training_TIMESTAMP/"
@@ -52,12 +52,12 @@ shift  # Remove first argument
 
 # Check if config exists (unless it's adhoc)
 if [ "$CONFIG_NAME" != "adhoc" ]; then
-    CONFIG_FILE="$SCRIPT_DIR/configs/${CONFIG_NAME}.sh"
+    CONFIG_FILE="$SCRIPT_DIR/configs/gino/${CONFIG_NAME}.sh"
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "Error: Config '$CONFIG_NAME' not found at $CONFIG_FILE"
         echo ""
         echo "Available configs:"
-        ls -1 "$SCRIPT_DIR/configs"/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /'
+        ls -1 "$SCRIPT_DIR/configs/gino"/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /'
         exit 1
     fi
 fi

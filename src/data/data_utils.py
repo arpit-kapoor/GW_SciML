@@ -161,6 +161,7 @@ def make_collate_fn(args, coord_dim=3):
         # All samples in the batch come from the same patch (by sampler design)
         core_coords = batch_samples[0]['core_coords']
         ghost_coords = batch_samples[0]['ghost_coords']
+        patch_id = batch_samples[0]['patch_id']  # Extract patch ID from first sample
 
         # Single point cloud per batch: [N_core+N_ghost, coord_dim]
         # Concatenate core and ghost points to form complete spatial domain
@@ -199,6 +200,7 @@ def make_collate_fn(args, coord_dim=3):
 
         # Return batch dictionary
         batch = {
+            'patch_id': patch_id,             # Patch identifier for tracking results
             'point_coords': point_coords,      # [N_points, coord_dim]
             'latent_queries': latent_queries,  # [Qx, Qy, Qz, coord_dim]
             'x': x,                           # [B, N_points, input_channels]
@@ -209,3 +211,36 @@ def make_collate_fn(args, coord_dim=3):
         return batch
     
     return collate_fn
+
+
+def reshape_multi_col_predictions(predictions, output_window_size, n_target_cols):
+    """
+    Reshape concatenated predictions to separate target columns.
+    
+    The dataset concatenates data as: [t0_var0, t0_var1, t1_var0, t1_var1, t2_var0, t2_var1, ...]
+    This is because _concat_sequence does: seq.reshape(n_points, -1) on [n_points, window_size, n_target_cols]
+    which flattens in row-major order, interleaving timesteps and variables.
+    
+    Args:
+        predictions: Array of shape [N_samples, N_points, output_window_size * n_target_cols]
+        output_window_size: Number of timesteps
+        n_target_cols: Number of target columns
+        
+    Returns:
+        Array of shape [N_samples, N_points, output_window_size, n_target_cols]
+    """
+    import numpy as np
+    n_samples, n_points, total_size = predictions.shape
+    
+    # Verify dimensions match
+    if total_size != output_window_size * n_target_cols:
+        raise ValueError(
+            f"Expected predictions shape [..., {output_window_size * n_target_cols}], "
+            f"got [..., {total_size}]"
+        )
+    
+    # The data is stored as [t0_v0, t0_v1, t1_v0, t1_v1, ...] for each point
+    # So we reshape to [N_samples, N_points, output_window_size, n_target_cols] directly
+    # This naturally de-interleaves the timesteps and variables
+    reshaped = predictions.reshape(n_samples, n_points, output_window_size, n_target_cols)
+    return reshaped

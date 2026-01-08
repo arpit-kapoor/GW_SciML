@@ -189,4 +189,13 @@ cython_debug/
 # iframe figures
 *.html
 
+# HPC output files
 GINO_Train.o*
+FNO_Train.o* 
+FNO_Predict.o*
+GINO_Predict.o*
+
+GINO_Train.e*
+FNO_Train.e* 
+FNO_Predict.e*
+GINO_Predict.e*

@@ -23,7 +23,7 @@ from .checkpoint import (
 from .visualization import plot_training_curves
 
 from .parallel_utils import (
-    GINODataParallelAdapter,
+    DataParallelAdapter,
     unwrap_dp,
     unwrap_model_for_state_dict,
     broadcast_static_inputs_for_dp,

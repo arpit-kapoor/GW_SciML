@@ -280,8 +280,8 @@ class FNOInterpolate(nn.Module):
 
     def __init__(
         self,
-        # Grid configuration
-        latent_grid_size=(16, 16, 16),
+        # Grid configuration (consistent with GINO naming)
+        latent_query_dims=(16, 16, 16),
         coord_dim=3,
         
         # Input/Output channels
@@ -303,7 +303,7 @@ class FNOInterpolate(nn.Module):
         
         # Lifting/Projection
         lifting_channels=128,
-        projection_channels=None,
+        projection_channel_ratio=4,
         
         # Interpolation settings
         # interpolation_mode='trilinear',  # 'bilinear' for 2D, 'trilinear' for 3D
@@ -313,8 +313,9 @@ class FNOInterpolate(nn.Module):
         """
         Parameters
         ----------
-        latent_grid_size : tuple
+        latent_query_dims : tuple
             Size of the regular grid in latent space (e.g., (16, 16, 16) for 3D)
+            Uses same naming as GINO for consistency
         coord_dim : int
             Dimensionality of coordinates (2 or 3)
         in_channels : int
@@ -341,8 +342,8 @@ class FNOInterpolate(nn.Module):
             Non-linearity activation function
         lifting_channels : int
             Hidden channels in lifting MLP
-        projection_channels : int, optional
-            Hidden channels in projection MLP (defaults to 4 * fno_hidden_channels)
+        projection_channel_ratio : int
+            Ratio to multiply fno_hidden_channels for projection MLP hidden channels
         interpolation_mode : str
             Interpolation mode ('bilinear', 'trilinear', 'nearest')
         align_corners : bool
@@ -352,19 +353,20 @@ class FNOInterpolate(nn.Module):
         """
         super(FNOInterpolate, self).__init__()
         
-        self.latent_grid_size = latent_grid_size
+        self.latent_query_dims = latent_query_dims
         self.coord_dim = coord_dim
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.latent_feature_channels = latent_feature_channels
         self.fno_hidden_channels = fno_hidden_channels
+        self.projection_channel_ratio = projection_channel_ratio
         # self.interpolation_mode = interpolation_mode
         self.align_corners = align_corners
         self.padding_mode = padding_mode
         
         # Validate coordinate dimension matches grid size
-        assert len(latent_grid_size) == coord_dim, \
-            f"Grid size dimensions {len(latent_grid_size)} must match coord_dim {coord_dim}"
+        assert len(latent_query_dims) == coord_dim, \
+            f"Grid size dimensions {len(latent_query_dims)} must match coord_dim {coord_dim}"
         
         # Set interpolation mode - PyTorch's grid_sample uses 'bilinear' for both 2D and 3D
         # ('bilinear' automatically does trilinear interpolation for 3D grids)
@@ -398,8 +400,7 @@ class FNOInterpolate(nn.Module):
         )
         
         # Projection layer
-        if projection_channels is None:
-            projection_channels = 4 * fno_hidden_channels
+        projection_channels = projection_channel_ratio * fno_hidden_channels
         
         self.projection = MLP(
             in_channels=fno_hidden_channels,
@@ -477,7 +478,7 @@ class FNOInterpolate(nn.Module):
         
         # Reshape to grid format: (batch, in_channels, *grid_size)
         grid_features = grid_features.permute(0, 2, 1)  # (batch, in_channels, n_grid)
-        grid_features = grid_features.reshape(batch_size, -1, *self.latent_grid_size)
+        grid_features = grid_features.reshape(batch_size, -1, *self.latent_query_dims)
         
         return grid_features
 

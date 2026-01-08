@@ -73,7 +73,6 @@ except Exception as _e:
 
 def add_gino_model_args(parser):
     """Add GINO-specific model arguments to the parser."""
-    # All GINO parameters are computed automatically
     return parser
 
 
@@ -156,17 +155,6 @@ if __name__ == "__main__":
     for k in sorted(vars(args)):
         print(f"  {k}: {getattr(args, k)}")
     print("="*60 + "\n")
-    
-    # print(f"\n{'='*60}")
-    # print(f"Training Configuration Summary")
-    # print(f"{'='*60}")
-    # print(f"Device: {args.device}")
-    # print(f"Target columns: {args.target_cols} (indices: {args.target_col_indices})")
-    # print(f"Input/Output windows: {args.input_window_size}/{args.output_window_size}")
-    # print(f"Input/Output channels: {args.in_gno_out_channels}/{args.out_channels}")
-    # print(f"Batch size: {args.batch_size}, Epochs: {args.epochs}")
-    # print(f"Learning rate: {args.learning_rate}, Scheduler: {args.scheduler_type}")
-    # print(f"{'='*60}\n")
 
     # Set random seeds
     torch.manual_seed(args.seed)

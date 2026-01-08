@@ -1,33 +1,33 @@
 #!/bin/bash
-#PBS -N GINO_Predict
+#PBS -N FNO_Predict
 #PBS -l select=1:ncpus=4:mem=16gb:ngpus=1
 #PBS -l walltime=2:00:00
 #PBS -m abe
-#PBS -j oe
 
 # Redirect output to log file
 LOG_DIR="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs"
-LOG_FILE="${LOG_DIR}/predict_gino_${PBS_JOBID}.log"
+LOG_FILE="${LOG_DIR}/predict_fno_${PBS_JOBID}.log"
 exec > "$LOG_FILE" 2>&1
 echo "Job started on $(hostname) at $(date)"
 echo "Job ID: $PBS_JOBID"
 
-# Simple GINO prediction with config-based setup
+# FNOInterpolate prediction with config-based setup
 #
 # Usage examples:
-#   qsub -v CONFIG=default hpc/generate_gino_predictions.pbs
-#   qsub -v CONFIG=latest hpc/generate_gino_predictions.pbs
-#   qsub -v CONFIG=custom_model hpc/generate_gino_predictions.pbs
+#   qsub -v CONFIG=default hpc/generate_fno_predictions.pbs
+#   qsub -v CONFIG=bilinear hpc/generate_fno_predictions.pbs
+#   qsub -v CONFIG=custom_model hpc/generate_fno_predictions.pbs
 #
-# Available configs (see hpc/prediction_configs/gino/):
+# Available configs (see hpc/prediction_configs/fno/):
 #   - default      : Predict using default trained model
-#   - latest       : Predict using most recent trained model
+#   - bilinear     : Predict using bilinear interpolation model
+#   - nearest      : Predict using nearest neighbor model
 
 cd $PBS_O_WORKDIR/..
 
 # Environment
 PYTHON_ENV="/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python"
-PREDICTIONS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions"
+PREDICTIONS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO_predictions"
 
 # Determine config name (defaults to 'default' if not specified)
 CONFIG_NAME="${CONFIG:-default}"
@@ -37,16 +37,20 @@ CONFIG_PREDICTIONS_DIR="${PREDICTIONS_BASE_DIR}/${CONFIG_NAME}"
 mkdir -p "$CONFIG_PREDICTIONS_DIR"
 
 echo "=========================================="
-echo "GINO Prediction Job"
+echo "FNOInterpolate Prediction Job"
 echo "=========================================="
 echo "Config: $CONFIG_NAME"
 echo "Predictions directory: $CONFIG_PREDICTIONS_DIR"
 echo "Job ID: $PBS_JOBID"
 echo "Start time: $(date)"
 echo "=========================================="
+echo ""
+echo "GPU Information:"
+nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.free --format=csv
+echo "=========================================="
 
 # Load config
-CONFIG_FILE="hpc/prediction_configs/gino/${CONFIG_NAME}.sh"
+CONFIG_FILE="hpc/prediction_configs/fno/${CONFIG_NAME}.sh"
 if [ -f "$CONFIG_FILE" ]; then
     echo "Loading configuration from: $CONFIG_FILE"
     source "$CONFIG_FILE"
@@ -54,7 +58,7 @@ if [ -f "$CONFIG_FILE" ]; then
 else
     echo "Error: Config file $CONFIG_FILE not found"
     echo "Available configs:"
-    ls -1 hpc/prediction_configs/gino/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
+    ls -1 hpc/prediction_configs/fno/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
     exit 1
 fi
 
@@ -75,11 +79,11 @@ echo ""
 echo "=========================================="
 echo ""
 echo "Executing command:"
-echo "$PYTHON_ENV -u generate_gino_predictions_refactored.py $PREDICT_ARGS"
+echo "$PYTHON_ENV -u generate_fno_predictions_refactored.py $PREDICT_ARGS"
 echo ""
 
 # Execute prediction with unbuffered output (-u flag)
-$PYTHON_ENV -u generate_gino_predictions_refactored.py $PREDICT_ARGS
+$PYTHON_ENV -u generate_fno_predictions_refactored.py $PREDICT_ARGS
 
 EXIT_CODE=$?
 
@@ -89,6 +93,17 @@ echo "Prediction generation completed"
 echo "Exit code: $EXIT_CODE"
 echo "End time: $(date)"
 echo "Predictions saved to: $CONFIG_PREDICTIONS_DIR"
+echo "=========================================="
+
+# PBS Resource Usage Summary
+echo ""
+echo "=========================================="
+echo "PBS Resource Usage Summary"
+echo "=========================================="
+qstat -f $PBS_JOBID 2>/dev/null | grep -E '(Job_Name|resources_used|Exit_status|exec_host)' || echo "Job completed, stats no longer available"
+echo ""
+echo "Final GPU Status:"
+nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu --format=csv
 echo "=========================================="
 
 exit $EXIT_CODE

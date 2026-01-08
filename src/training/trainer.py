@@ -88,8 +88,9 @@ def train_model(
         
         # Record training losses
         for key, value in epoch_losses.items():
-            if key in loss_dict:
-                loss_dict[key].append(value)
+            train_key = f'train_{key}' if not key.startswith('train_') else key
+            if train_key in loss_dict:
+                loss_dict[train_key].append(value)
         
         # Evaluate on validation set
         val_losses = evaluate_model(

@@ -11,5 +11,5 @@ TRAIN_ARGS="
 --scheduler-type exponential 
 --grad-clip-norm 1.0 
 --save-checkpoint-every 25
---lambda-conc-focus 0.0
+--lambda-conc-focus 0.3
 "
