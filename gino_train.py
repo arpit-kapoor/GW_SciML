@@ -1,8 +1,5 @@
 """
-Train FNOInterpolate on variable-density groundwater patches with multi-column support.
-
-FNOInterpolate uses interpolation (instead of GNO blocks) for encoding/decoding between
-point clouds and regular grids, with FNO blocks operating in the latent grid space.
+Train GINO on variable-density groundwater patches with multi-column support.
 """
 
 import sys
@@ -22,7 +19,7 @@ from src.data.data_utils import (
     create_patch_datasets,
     make_collate_fn,
 )
-from src.models.neuralop.fno import FNOInterpolate
+from src.models.neuralop.gino import GINO
 from src.models.neuralop.losses import variance_aware_multicol_loss
 from src.training import (
     setup_training_arguments,
@@ -74,49 +71,45 @@ except Exception as _e:
 # --- End patch ---
 
 
-def add_fno_interpolate_model_args(parser):
-    """Add FNOInterpolate-specific model arguments to the parser."""
-    parser.add_argument('--align-corners', action='store_true', default=False,
-                        dest='align_corners',
-                        help='Whether to align corners in grid_sample interpolation')
-    parser.add_argument('--padding-mode', type=str, default='border',
-                        dest='padding_mode',
-                        help='Padding mode for grid_sample (zeros, border, reflection)')
+def add_gino_model_args(parser):
+    """Add GINO-specific model arguments to the parser."""
     return parser
 
 
 def define_model_parameters(args):
-    """Define FNOInterpolate architecture parameters based on input configuration."""
+    """Define GINO architecture parameters based on input configuration."""
     args.coord_dim = 3
     args.n_target_cols = len(args.target_cols)
-    
-    # FNO configuration (same as GINO)
+    args.gno_radius = 0.18
+    args.in_gno_out_channels = args.input_window_size * args.n_target_cols
+    args.in_gno_channel_mlp_layers = [32, 64, 32]
     args.fno_n_layers = 4
-    args.fno_n_modes = (12, 12, 8)
-    args.fno_hidden_channels = 64
+    args.fno_n_modes = (8, 8, 6)
+    args.fno_hidden_channels = 128
     args.lifting_channels = 64
+    args.out_gno_channel_mlp_layers = [32, 64, 32]
     args.projection_channel_ratio = 2
-    args.in_channels = args.input_window_size * args.n_target_cols
     args.out_channels = args.output_window_size * args.n_target_cols
-    args.latent_query_dims = (32, 32, 24)
-    
+    args.latent_query_dims = (16, 16, 8)
     return args
 
 
-def define_fno_interpolate_model(args):
-    """Instantiate FNOInterpolate model with configured parameters."""
-    model = FNOInterpolate(
-        latent_query_dims=args.latent_query_dims,
-        coord_dim=args.coord_dim,
-        in_channels=args.in_channels,
-        out_channels=args.out_channels,
-        lifting_channels=args.lifting_channels,
-        projection_channel_ratio=args.projection_channel_ratio,
+def define_gino_model(args):
+    """Instantiate GINO model with configured parameters."""
+    model = GINO(
+        in_gno_coord_dim=args.coord_dim,
+        in_gno_radius=args.gno_radius,
+        in_gno_out_channels=args.in_gno_out_channels,
+        in_gno_channel_mlp_layers=args.in_gno_channel_mlp_layers,
+        fno_n_layers=args.fno_n_layers,
         fno_n_modes=args.fno_n_modes,
         fno_hidden_channels=args.fno_hidden_channels,
-        fno_n_layers=args.fno_n_layers,
-        align_corners=args.align_corners,
-        padding_mode=args.padding_mode,
+        lifting_channels=args.lifting_channels,
+        out_gno_coord_dim=args.coord_dim,
+        out_gno_radius=args.gno_radius,
+        out_gno_channel_mlp_layers=args.out_gno_channel_mlp_layers,
+        projection_channel_ratio=args.projection_channel_ratio,
+        out_channels=args.out_channels,
     ).to(args.device)
     return model
 
@@ -143,19 +136,19 @@ def create_data_loaders(train_ds, val_ds, args):
 
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("FNOInterpolate Training Script - Starting")
+    print("GINO Training Script - Starting")
     print("="*60)
     
     # Setup arguments with defaults
     print("Setting up training arguments...")
     args = setup_training_arguments(
-        description='Train FNOInterpolate model on groundwater patches with multi-column support',
+        description='Train GINO model on groundwater patches with multi-column support',
         default_base_data_dir='/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density',
-        default_results_dir='/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO/interpolate/mass_conc_head',
-        add_model_specific_args=add_fno_interpolate_model_args
+        default_results_dir='/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO/multi_col/mass_conc_head',
+        add_model_specific_args=add_gino_model_args
     )
     
-    # Configure FNOInterpolate model parameters and target columns
+    # Configure GINO model parameters and target columns
     args = define_model_parameters(args)
     args = configure_target_col_indices(args)
     print("Training configuration:")
@@ -194,7 +187,7 @@ if __name__ == "__main__":
     print(f"Data loaders - Train: {len(train_loader)} batches, Val: {len(val_loader)} batches\n")
 
     # Initialize model
-    base_model = define_fno_interpolate_model(args)
+    base_model = define_gino_model(args)
     model = DataParallelAdapter(base_model)
     
     # Wrap with DataParallel if multiple GPUs available
@@ -232,7 +225,7 @@ if __name__ == "__main__":
     )
 
     # Save final model
-    model_path = os.path.join(args.results_dir, 'fno_interpolate_model.pth')
+    model_path = os.path.join(args.results_dir, 'gino_model.pth')
     torch.save(unwrap_model_for_state_dict(model).state_dict(), model_path)
     print(f"\n{'='*60}")
     print(f"Training complete! Model saved to: {model_path}")

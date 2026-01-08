@@ -261,30 +261,32 @@ def evaluate_model(val_loader, model, loss_fn, args, forward_fn=None, extract_co
 
 
 def _default_gino_forward(model, batch, args):
-    """Default forward pass for GINO models with patch-based data."""
-    # Move batch data to device
+    """
+    Default forward pass for GINO models with patch-based data.
+    
+    Works with both single-GPU and multi-GPU (DataParallel) setups.
+    The model should be wrapped with DataParallelAdapter which handles
+    the custom forward signature and static input broadcasting.
+    """
     point_coords = batch['point_coords'].to(args.device).float()
     latent_queries = batch['latent_queries'].to(args.device).float()
     x = batch['x'].to(args.device).float()
     
     batch_size = x.shape[0]
+
+    if not model.training:
+        # unwrap model from DataParallel if evaluating
+        model = unwrap_dp(model)
     
-    # Broadcast static inputs for DataParallel compatibility
+    # Add fake batch dimensions to static inputs for DataParallel
+    # DataParallel will split these along batch dim and send to each GPU
     input_geom_b, latent_queries_b, output_queries_b = broadcast_static_inputs_for_dp(
         point_coords, latent_queries, batch_size
     )
     
-    # Unwrap model if in eval mode (avoid DP replication)
-    if not model.training:
-        model = unwrap_dp(model)
-    
-    # Forward pass
-    outputs = model(
-        input_geom=input_geom_b,
-        latent_queries=latent_queries_b,
-        x=x,
-        output_queries=output_queries_b,
-    )
+    # Call model with positional args for DataParallel compatibility
+    # DataParallelAdapter.forward() accepts positional args and handles the rest
+    outputs = model(input_geom_b, latent_queries_b, x, output_queries_b)
     
     return outputs
 

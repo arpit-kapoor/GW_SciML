@@ -25,6 +25,7 @@ class NeighborSearch(nn.Module):
     def __init__(self, use_open3d=True, return_norm=False):
         super().__init__()
         if use_open3d and open3d_built: # slightly faster, works on GPU in 3d only
+            print("Using open3d for neighbor search")
             self.search_fn = FixedRadiusSearch()
             self.use_open3d = use_open3d
         else: # slower fallback, works on GPU and CPU
@@ -69,6 +70,8 @@ class NeighborSearch(nn.Module):
         if self.use_open3d:
             search_return = self.search_fn(data, queries, radius)
             return_dict['neighbors_index'] = search_return.neighbors_index.long()
+            # print(f"data shape: {data.shape}, queries shape: {queries.shape}, radius: {radius}")
+            # print(f"Neighbor search found {return_dict['neighbors_index'].shape} total neighbors")
             return_dict['neighbors_row_splits'] = search_return.neighbors_row_splits.long()
 
         else:

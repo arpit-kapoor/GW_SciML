@@ -1,40 +1,44 @@
 #!/bin/bash
-#PBS -N GINO_Train
-#PBS -l select=1:ncpus=8:mem=16gb:ngpus=2:gpu_model=A100
+#PBS -N FNO_Train
+#PBS -l select=1:ncpus=8:mem=16gb:ngpus=1:gpu_model=A100
 #PBS -l walltime=12:00:00
+#PBS -o /dev/null
+#PBS -e /dev/null
 #PBS -m abe
 
 # Redirect output to log file
 LOG_DIR="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs"
-LOG_FILE="${LOG_DIR}/train_gino_${PBS_JOBID}.log"
+CONFIG_NAME="${CONFIG:-adhoc}"
+LOG_FILE="${LOG_DIR}/fno_${CONFIG_NAME}_train_${PBS_JOBID}.log"
 exec > "$LOG_FILE" 2>&1
 echo "Job started on $(hostname) at $(date)"
 echo "Job ID: $PBS_JOBID"
 
-# Simple GINO training with config-based directory organization
+# FNOInterpolate training with config-based directory organization
 # 
-# Directory structure: RESULTS_BASE_DIR/CONFIG_NAME/gino_multi_TIMESTAMP/
+# Directory structure: RESULTS_BASE_DIR/CONFIG_NAME/fno_interpolate_TIMESTAMP/
 # 
 # Usage examples:
-#   qsub -v CONFIG=default hpc/train_gino_multi_col.pbs
-#   qsub -v CONFIG=high_lr hpc/train_gino_multi_col.pbs
-#   qsub -v CONFIG=three_vars hpc/train_gino_multi_col.pbs
-#   qsub -v "CONFIG=custom,ARGS=--epochs 100" hpc/train_gino_multi_col.pbs
-#   qsub -v "ARGS=--epochs 50 --batch-size 256" hpc/train_gino_multi_col.pbs  # Uses 'adhoc' config
+#   qsub -v CONFIG=default hpc/train_fno_interpolate_multi_col.pbs
+#   qsub -v CONFIG=high_lr hpc/train_fno_interpolate_multi_col.pbs
+#   qsub -v CONFIG=bilinear hpc/train_fno_interpolate_multi_col.pbs
+#   qsub -v "CONFIG=custom,ARGS=--epochs 100" hpc/train_fno_interpolate_multi_col.pbs
+#   qsub -v "ARGS=--epochs 50 --batch-size 256" hpc/train_fno_interpolate_multi_col.pbs  # Uses 'adhoc' config
 #
-# Available configs (see hpc/configs/):
+# Available configs (see hpc/configs/fno/):
 #   - default      : Standard training with mass_concentration + head
+#   - bilinear     : Bilinear interpolation (default)
+#   - nearest      : Nearest neighbor interpolation
 #   - high_lr      : Experiment with higher learning rate
 #   - large_batch  : Experiment with larger batch size
 #   - three_vars   : Train on all three variables
-#   - long_horizon : Longer prediction window
 #   - resume_*     : Resume from specific config's latest checkpoint
 
 cd $PBS_O_WORKDIR/..
 
 # Environment
 PYTHON_ENV="/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python"
-RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO"
+RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO"
 
 # Determine config name (defaults to 'adhoc' if not specified)
 CONFIG_NAME="${CONFIG:-adhoc}"
@@ -44,17 +48,19 @@ CONFIG_RESULTS_DIR="${RESULTS_BASE_DIR}/${CONFIG_NAME}"
 mkdir -p "$CONFIG_RESULTS_DIR"
 
 echo "=========================================="
-echo "GINO Training Job"
+echo "FNOInterpolate Training Job"
 echo "=========================================="
 echo "Config: $CONFIG_NAME"
 echo "Results directory: $CONFIG_RESULTS_DIR"
 echo "Job ID: $PBS_JOBID"
 echo "Start time: $(date)"
+echo "=========================================="echo ""
+echo "GPU Information:"
+nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.free --format=csv
 echo "=========================================="
-
 # Load config if specified, otherwise use command line args
 if [ "$CONFIG_NAME" != "adhoc" ]; then
-    CONFIG_FILE="hpc/configs/gino/${CONFIG_NAME}.sh"
+    CONFIG_FILE="hpc/configs/fno/${CONFIG_NAME}.sh"
     if [ -f "$CONFIG_FILE" ]; then
         echo "Loading configuration from: $CONFIG_FILE"
         source "$CONFIG_FILE"
@@ -62,7 +68,7 @@ if [ "$CONFIG_NAME" != "adhoc" ]; then
     else
         echo "Error: Config file $CONFIG_FILE not found"
         echo "Available configs:"
-        ls -1 hpc/configs/gino/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
+        ls -1 hpc/configs/fno/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
         exit 1
     fi
 else
@@ -81,12 +87,11 @@ echo ""
 echo "=========================================="
 echo ""
 echo "Executing command:"
-echo "$PYTHON_ENV -u train_gino_on_patches_multi_col_refactored.py $TRAIN_ARGS"
+echo "$PYTHON_ENV -u fno_train.py $TRAIN_ARGS"
 echo ""
 
 # Execute training with unbuffered output (-u flag)
-$PYTHON_ENV -u train_gino_on_patches_multi_col_refactored.py $TRAIN_ARGS
-
+$PYTHON_ENV -u fno_train.py $TRAIN_ARGS
 EXIT_CODE=$?
 
 echo ""
@@ -103,6 +108,9 @@ echo "=========================================="
 echo "PBS Resource Usage Summary"
 echo "=========================================="
 qstat -f $PBS_JOBID 2>/dev/null | grep -E '(Job_Name|resources_used|Exit_status|exec_host)' || echo "Job completed, stats no longer available"
+echo ""
+echo "Final GPU Status:"
+nvidia-smi --query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu --format=csv
 echo "=========================================="
 
 # List runs in this config directory

@@ -35,9 +35,11 @@ class DataParallelAdapter(torch.nn.Module):
         super().__init__()
         self.inner = inner  # the actual model
 
-    def forward(self, *, input_geom, latent_queries, x, output_queries):
+    def forward(self, input_geom, latent_queries, x, output_queries):
         """
         Forward pass that strips fake batch dimensions from static inputs.
+        
+        Note: Uses positional args (not keyword-only) for DataParallel compatibility.
         
         Args:
             input_geom (torch.Tensor): Input geometry [B, N_points, coord_dim] or [N_points, coord_dim]

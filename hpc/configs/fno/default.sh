@@ -2,7 +2,7 @@
 # Default FNOInterpolate configuration (bilinear interpolation, 2 variables)
 
 TRAIN_ARGS="
---epochs 10
+--epochs 250
 --batch-size 256
 --learning-rate 5e-4
 --scheduler-type exponential

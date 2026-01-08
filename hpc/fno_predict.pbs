@@ -1,27 +1,29 @@
 #!/bin/bash
 #PBS -N FNO_Predict
-#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1
+#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1:gpu_model=A100
 #PBS -l walltime=2:00:00
+#PBS -o /dev/null
+#PBS -e /dev/null
 #PBS -m abe
 
 # Redirect output to log file
 LOG_DIR="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs"
-LOG_FILE="${LOG_DIR}/predict_fno_${PBS_JOBID}.log"
+CONFIG_NAME="${CONFIG:-default}"
+LOG_FILE="${LOG_DIR}/fno_${CONFIG_NAME}_predict_${PBS_JOBID}.log"
 exec > "$LOG_FILE" 2>&1
 echo "Job started on $(hostname) at $(date)"
 echo "Job ID: $PBS_JOBID"
 
-# FNOInterpolate prediction with config-based setup
+# FNOInterpolate prediction with dynamic arguments
 #
-# Usage examples:
-#   qsub -v CONFIG=default hpc/generate_fno_predictions.pbs
-#   qsub -v CONFIG=bilinear hpc/generate_fno_predictions.pbs
-#   qsub -v CONFIG=custom_model hpc/generate_fno_predictions.pbs
+# Usage: Called via submit_fno.sh with --predict flag
+#   ./submit_fno.sh default --predict
+#   ./submit_fno.sh var_loss --predict
 #
-# Available configs (see hpc/prediction_configs/fno/):
-#   - default      : Predict using default trained model
-#   - bilinear     : Predict using bilinear interpolation model
-#   - nearest      : Predict using nearest neighbor model
+# Environment variables:
+#   CONFIG        : Configuration name (determines output directory)
+#   MODEL_PATH    : Path to model checkpoint
+#   PRED_ARGS     : Prediction arguments (constructed by submit_fno.sh)
 
 cd $PBS_O_WORKDIR/..
 
@@ -49,18 +51,19 @@ echo "GPU Information:"
 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.free --format=csv
 echo "=========================================="
 
-# Load config
-CONFIG_FILE="hpc/prediction_configs/fno/${CONFIG_NAME}.sh"
-if [ -f "$CONFIG_FILE" ]; then
-    echo "Loading configuration from: $CONFIG_FILE"
-    source "$CONFIG_FILE"
-    echo "Configuration loaded successfully"
-else
-    echo "Error: Config file $CONFIG_FILE not found"
-    echo "Available configs:"
-    ls -1 hpc/prediction_configs/fno/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
+# Get model path and prediction args from environment
+if [ -z "$MODEL_PATH" ]; then
+    echo "Error: MODEL_PATH not provided"
     exit 1
 fi
+
+if [ -z "$PRED_ARGS_B64" ]; then
+    echo "Error: PRED_ARGS_B64 not provided"
+    exit 1
+fi
+
+# Decode base64-encoded prediction arguments
+PRED_ARGS=$(echo "$PRED_ARGS_B64" | base64 -d)
 
 # Verify model path exists
 if [ ! -f "$MODEL_PATH" ]; then
@@ -69,22 +72,21 @@ if [ ! -f "$MODEL_PATH" ]; then
 fi
 
 # Append results directory to prediction args
-PREDICT_ARGS="$PREDICT_ARGS --results-dir $CONFIG_PREDICTIONS_DIR"
+PREDICT_ARGS="$PRED_ARGS --results-dir $CONFIG_PREDICTIONS_DIR"
 
 # Display final command
 echo ""
-echo "Prediction arguments:"
-echo "$PREDICT_ARGS"
+echo "Model checkpoint: $MODEL_PATH"
+echo "Prediction arguments: $PREDICT_ARGS"
 echo ""
 echo "=========================================="
 echo ""
 echo "Executing command:"
-echo "$PYTHON_ENV -u generate_fno_predictions_refactored.py $PREDICT_ARGS"
+echo "$PYTHON_ENV -u fno_predict.py $PREDICT_ARGS"
 echo ""
 
 # Execute prediction with unbuffered output (-u flag)
-$PYTHON_ENV -u generate_fno_predictions_refactored.py $PREDICT_ARGS
-
+$PYTHON_ENV -u fno_predict.py $PREDICT_ARGS
 EXIT_CODE=$?
 
 echo ""

@@ -647,28 +647,21 @@ def variance_aware_multicol_loss(
     y_pred = y_pred.view(B, N, output_window_size, C)
     y_true = y_true.view(B, N, output_window_size, C)
 
-    # Loss function
+    # Global loss over all variables
     global_loss_fn = LpLoss(d=2, p=2, reduce_dims=[0, 1], reductions='mean')
-    local_loss_fn = LpLoss(d=1, p=2, reductions='mean')
-
-    # ----- 1) global MSE over all variables -----
     global_loss = global_loss_fn(y_pred, y_true)
 
-    # ----- 2) variance-aware term for concentration using pre-computed weights -----
-    conc_idx = target_cols.index('mass_concentration')  # assumes name present
-
+    # Variance-aware term: MSE for concentration (absolute error avoids division-by-zero)
+    conc_idx = target_cols.index('mass_concentration')
     conc_pred = y_pred[..., conc_idx]   # [B, N, T]
     conc_true = y_true[..., conc_idx]   # [B, N, T]
 
-    # Use pre-computed weights from the dataset
-    # These weights are computed based on temporal variances across the full dataset
-    # and are already normalized to have mean 1.0
-    weights = weights.to(y_pred.device)  # Ensure weights are on the same device
+    weights = weights.to(y_pred.device)
+    mse_per_node = ((conc_pred - conc_true) ** 2).mean(dim=[0, 2])  # [N]
+    weighted_mse = (weights * mse_per_node).mean()
+    conc_var_loss = torch.sqrt(weighted_mse + 1e-8) 
 
-    conc_l2 = local_loss_fn(conc_pred, conc_true)        # [N]
-    conc_var_loss = (weights * conc_l2).mean()
-
-    # ----- 3) combine -----
-    loss = (1.0 - lambda_conc_focus) * global_loss + lambda_conc_focus * conc_var_loss
+    # Combine losses
+    loss = global_loss + lambda_conc_focus * conc_var_loss
 
     return loss, global_loss.detach(), conc_var_loss.detach()

@@ -1,27 +1,23 @@
 #!/bin/bash
 #PBS -N GINO_Predict
-#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1
+#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1:gpu_model=A100
 #PBS -l walltime=2:00:00
+#PBS -o /dev/null
+#PBS -e /dev/null
 #PBS -m abe
-#PBS -j oe
 
 # Redirect output to log file
 LOG_DIR="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs"
-LOG_FILE="${LOG_DIR}/predict_gino_${PBS_JOBID}.log"
+CONFIG_NAME="${CONFIG:-default}"
+LOG_FILE="${LOG_DIR}/gino_${CONFIG_NAME}_predict_${PBS_JOBID}.log"
 exec > "$LOG_FILE" 2>&1
 echo "Job started on $(hostname) at $(date)"
 echo "Job ID: $PBS_JOBID"
 
-# Simple GINO prediction with config-based setup
+# GINO prediction script - arguments passed via environment variables
 #
-# Usage examples:
-#   qsub -v CONFIG=default hpc/generate_gino_predictions.pbs
-#   qsub -v CONFIG=latest hpc/generate_gino_predictions.pbs
-#   qsub -v CONFIG=custom_model hpc/generate_gino_predictions.pbs
-#
-# Available configs (see hpc/prediction_configs/gino/):
-#   - default      : Predict using default trained model
-#   - latest       : Predict using most recent trained model
+# Usage: Called via submit_gino.sh with --predict flag
+#   ./submit_gino.sh [config_name] --predict [additional_args]
 
 cd $PBS_O_WORKDIR/..
 
@@ -29,8 +25,22 @@ cd $PBS_O_WORKDIR/..
 PYTHON_ENV="/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python"
 PREDICTIONS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions"
 
-# Determine config name (defaults to 'default' if not specified)
+# Get config name from environment (required)
 CONFIG_NAME="${CONFIG:-default}"
+
+# Get model path and prediction args from environment
+if [ -z "$MODEL_PATH" ]; then
+    echo "Error: MODEL_PATH not provided"
+    exit 1
+fi
+
+if [ -z "$PRED_ARGS_B64" ]; then
+    echo "Error: PRED_ARGS_B64 not provided"
+    exit 1
+fi
+
+# Decode base64-encoded prediction arguments
+PRED_ARGS=$(echo "$PRED_ARGS_B64" | base64 -d)
 
 # Create config-specific predictions directory
 CONFIG_PREDICTIONS_DIR="${PREDICTIONS_BASE_DIR}/${CONFIG_NAME}"
@@ -45,42 +55,30 @@ echo "Job ID: $PBS_JOBID"
 echo "Start time: $(date)"
 echo "=========================================="
 
-# Load config
-CONFIG_FILE="hpc/prediction_configs/gino/${CONFIG_NAME}.sh"
-if [ -f "$CONFIG_FILE" ]; then
-    echo "Loading configuration from: $CONFIG_FILE"
-    source "$CONFIG_FILE"
-    echo "Configuration loaded successfully"
-else
-    echo "Error: Config file $CONFIG_FILE not found"
-    echo "Available configs:"
-    ls -1 hpc/prediction_configs/gino/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
-    exit 1
-fi
-
 # Verify model path exists
 if [ ! -f "$MODEL_PATH" ]; then
     echo "Error: Model checkpoint not found: $MODEL_PATH"
     exit 1
 fi
 
+echo "Using model: $MODEL_PATH"
+
 # Append results directory to prediction args
-PREDICT_ARGS="$PREDICT_ARGS --results-dir $CONFIG_PREDICTIONS_DIR"
+PRED_ARGS="$PRED_ARGS --results-dir $CONFIG_PREDICTIONS_DIR"
 
 # Display final command
 echo ""
 echo "Prediction arguments:"
-echo "$PREDICT_ARGS"
+echo "$PRED_ARGS"
 echo ""
 echo "=========================================="
 echo ""
 echo "Executing command:"
-echo "$PYTHON_ENV -u generate_gino_predictions_refactored.py $PREDICT_ARGS"
+echo "$PYTHON_ENV -u gino_predict.py $PRED_ARGS"
 echo ""
 
 # Execute prediction with unbuffered output (-u flag)
-$PYTHON_ENV -u generate_gino_predictions_refactored.py $PREDICT_ARGS
-
+$PYTHON_ENV -u gino_predict.py $PRED_ARGS
 EXIT_CODE=$?
 
 echo ""
