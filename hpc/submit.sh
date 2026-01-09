@@ -203,7 +203,10 @@ elif [ "$MODE" == "resume" ]; then
     echo "Submitting ${MODEL_TYPE^^} job with config '$CONFIG_NAME'"
     echo "  Mode: Resume training"
     [ -n "$*" ] && echo "  Additional args: $*"
-    qsub -v "CONFIG=${CONFIG_NAME},ARGS=$ADDITIONAL_ARGS" "$TRAIN_PBS_SCRIPT"
+    
+    # Base64 encode the arguments to avoid PBS quoting issues
+    ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0)
+    qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$TRAIN_PBS_SCRIPT"
     
     echo ""
     echo "Results will be saved to: ${RESULTS_BASE_DIR/${RESULTS_BASE_DIR%/*}\//}/${CONFIG_NAME}/"
@@ -215,7 +218,9 @@ else
     if [ -n "$ADDITIONAL_ARGS" ]; then
         echo "Submitting ${MODEL_TYPE^^} training job with config '$CONFIG_NAME'"
         [ -n "$*" ] && echo "  Additional args: $*"
-        qsub -v "CONFIG=${CONFIG_NAME},ARGS=$ADDITIONAL_ARGS" "$TRAIN_PBS_SCRIPT"
+        # Base64 encode the arguments to avoid PBS quoting issues
+        ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0)
+        qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$TRAIN_PBS_SCRIPT"
     else
         echo "Submitting ${MODEL_TYPE^^} training job with config: $CONFIG_NAME"
         qsub -v "CONFIG=${CONFIG_NAME}" "$TRAIN_PBS_SCRIPT"

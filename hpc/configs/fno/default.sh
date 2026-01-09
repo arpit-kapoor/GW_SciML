@@ -10,5 +10,6 @@ TRAIN_ARGS="
 --input-window-size 5
 --output-window-size 1
 --lambda-conc-focus 0.0
+--save-checkpoint-every 25
 --padding-mode border
 "

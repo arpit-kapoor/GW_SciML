@@ -288,6 +288,13 @@ def _default_gino_forward(model, batch, args):
     # DataParallelAdapter.forward() accepts positional args and handles the rest
     outputs = model(input_geom_b, latent_queries_b, x, output_queries_b)
     
+    # Debug: Print shapes (only for first batch of first epoch)
+    if not hasattr(args, '_shapes_logged'):
+        print(f"\n[DEBUG] Model output shape: {outputs.shape}")
+        print(f"[DEBUG] Input x shape: {x.shape}")
+        print(f"[DEBUG] Target y shape: {batch['y'].shape}")
+        args._shapes_logged = True
+    
     return outputs
 
 
@@ -303,6 +310,14 @@ def _default_extract_core_points(outputs, batch, args):
     # Extract weights
     weights = batch['weights'].to(args.device).float()
     core_weights = weights[:core_len]
+    
+    # Debug: Print shapes after core extraction (only once)
+    if not hasattr(args, '_core_shapes_logged'):
+        print(f"[DEBUG] Core outputs shape (after extraction): {core_outputs.shape}")
+        print(f"[DEBUG] Core targets shape (after extraction): {core_targets.shape}")
+        print(f"[DEBUG] Core weights shape: {core_weights.shape}")
+        print(f"[DEBUG] Core length: {core_len}\n")
+        args._core_shapes_logged = True
     
     return core_outputs, core_targets, core_weights
 
