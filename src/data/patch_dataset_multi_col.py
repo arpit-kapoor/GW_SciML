@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 
 class GWPatchDatasetMultiCol(Dataset):
@@ -25,7 +26,9 @@ class GWPatchDatasetMultiCol(Dataset):
         val_ratio=0.3,
         input_window_size=10,
         output_window_size=10,
-        target_col_indices=None
+        target_col_indices=None,
+        forcings_transform=None,
+        forcings_required=False
     ):
         """
         Initialize the GWPatchDatasetMultiCol.
@@ -39,12 +42,17 @@ class GWPatchDatasetMultiCol(Dataset):
             input_window_size (int): Number of time steps in each input sequence.
             output_window_size (int): Number of time steps in each output sequence.
             target_col_indices (list of int, optional): Indices of target columns to extract and concatenate.
+            forcings_transform (callable, optional): Transform function for forcings data.
+            forcings_required (bool): Whether forcings data is required for the model.
         """
         self.data_path = data_path
         self.dataset = dataset
         self.coord_transform = coord_transform
         self.obs_transform = obs_transform
         self.val_ratio = val_ratio
+        self.forcings_transform = forcings_transform 
+        self.forcings_required = forcings_required
+
 
         # Load and process patch data
         patch_data = self.load_patch_data(
@@ -112,6 +120,7 @@ class GWPatchDatasetMultiCol(Dataset):
                 ghost_in_seq = ghost_obs[i:i + input_window_size]
                 core_out_seq = core_obs[i + input_window_size:i + input_window_size + output_window_size]
                 ghost_out_seq = ghost_obs[i + input_window_size:i + input_window_size + output_window_size]
+
                 
                 # Reshape and concatenate: [n_points, window_size * n_target_cols]
                 # This flattens across time and variable dimensions
@@ -119,6 +128,18 @@ class GWPatchDatasetMultiCol(Dataset):
                 ghost_in = self._concat_sequence(ghost_in_seq)
                 core_out = self._concat_sequence(core_out_seq)
                 ghost_out = self._concat_sequence(ghost_out_seq)
+
+
+                # Forcings sequences can be extracted here if required
+                if self.forcings_required:
+                    core_forcings_seq = patch['core_forcings'][i + input_window_size:i + input_window_size + output_window_size]
+                    ghost_forcings_seq = patch['ghost_forcings'][i + input_window_size:i + input_window_size + output_window_size]
+                    core_forcings = self._concat_sequence(core_forcings_seq)
+                    ghost_forcings = self._concat_sequence(ghost_forcings_seq)
+
+                    # Add forcings to input sequences if needed
+                    core_in = torch.cat([core_in, core_forcings], dim=-1)
+                    ghost_in = torch.cat([ghost_in, ghost_forcings], dim=-1)
                 
                 input_sequence.append({
                     'core_in': core_in,
@@ -176,11 +197,18 @@ class GWPatchDatasetMultiCol(Dataset):
             if patch_dir.startswith('.'):
                 continue
 
+            # Patch data path
             patch_dir_path = os.path.join(data_path, patch_dir)
+
+            # Load core and ghost data
             core_coords = np.load(os.path.join(patch_dir_path, 'core_coords.npy'))
             core_obs = np.load(os.path.join(patch_dir_path, 'core_obs.npy'))
             ghost_coords = np.load(os.path.join(patch_dir_path, 'ghost_coords.npy'))
             ghost_obs = np.load(os.path.join(patch_dir_path, 'ghost_obs.npy'))
+
+            # Load forcings
+            core_forcings = np.load(os.path.join(patch_dir_path, 'core_forcings.npy'))
+            ghost_forcings = np.load(os.path.join(patch_dir_path, 'ghost_forcings.npy'))
 
             # Determine split index for train/val
             train_idx = int(len(core_obs) * (1 - val_ratio))
@@ -201,7 +229,10 @@ class GWPatchDatasetMultiCol(Dataset):
             if self.obs_transform is not None:
                 core_obs = self.obs_transform(core_obs)
                 ghost_obs = self.obs_transform(ghost_obs)
-            
+            if self.forcings_transform is not None:
+                core_forcings = self.forcings_transform(core_forcings)
+                ghost_forcings = self.forcings_transform(ghost_forcings)
+
             # Select and concatenate target columns
             if target_col_indices is not None:
                 # Extract selected columns: [..., indices] -> [..., n_target_cols]
@@ -221,7 +252,9 @@ class GWPatchDatasetMultiCol(Dataset):
                     'core_obs': core_obs[:train_idx],
                     'ghost_coords': ghost_coords,
                     'ghost_obs': ghost_obs[:train_idx],
-                    'temporal_variances': temporal_variances  # [n_points]
+                    'temporal_variances': temporal_variances,  # [n_points]
+                    'core_forcings': core_forcings[:train_idx],
+                    'ghost_forcings': ghost_forcings[:train_idx]
                 })
             else:
                 patch_data.append({
@@ -230,7 +263,9 @@ class GWPatchDatasetMultiCol(Dataset):
                     'core_obs': core_obs[train_idx:],
                     'ghost_coords': ghost_coords,
                     'ghost_obs': ghost_obs[train_idx:],
-                    'temporal_variances': temporal_variances  # [n_points] - same for val
+                    'temporal_variances': temporal_variances,  # [n_points] - same for val
+                    'core_forcings': core_forcings[train_idx:],
+                    'ghost_forcings': ghost_forcings[train_idx:]
                 })
 
         return patch_data

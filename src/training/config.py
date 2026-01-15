@@ -42,7 +42,7 @@ def setup_training_arguments(
                        help='Base data directory')
     parser.add_argument('--raw-data-subdir', type=str, default='all',
                        help='Raw data subdirectory name')
-    parser.add_argument('--patch-data-subdir', type=str, default='filter_patch',
+    parser.add_argument('--patch-data-subdir', type=str, default='filter_patch_all_ts',
                        help='Patch data subdirectory name')
     parser.add_argument('--results-dir', type=str, default=default_results_dir,
                        help='Directory to save trained models and results')
@@ -51,6 +51,10 @@ def setup_training_arguments(
     parser.add_argument('--target-cols', type=str, nargs='+', 
                        default=['mass_concentration', 'head'],
                        help='List of target observation column names (e.g., mass_concentration head pressure)')
+    
+    parser.add_argument('--forcings-required', action='store_true', default=False,
+                       help='Indicates if forcings data is required for the model (default: False)')
+
     
     # Sequence lengths
     parser.add_argument('--input-window-size', type=int, default=10,

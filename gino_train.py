@@ -18,6 +18,7 @@ from src.data.data_utils import (
     calculate_obs_transform,
     create_patch_datasets,
     make_collate_fn,
+    calculate_forcings_transform,
 )
 from src.models.neuralop.gino import GINO
 from src.models.neuralop.losses import variance_aware_multicol_loss
@@ -82,6 +83,9 @@ def define_model_parameters(args):
     args.n_target_cols = len(args.target_cols)
     args.gno_radius = 0.18
     args.in_gno_out_channels = args.input_window_size * args.n_target_cols
+    if args.forcings_required:
+        args.forcings_dim = 4  # Number of forcings features
+        args.in_gno_out_channels += args.forcings_dim
     args.in_gno_channel_mlp_layers = [32, 64, 32]
     args.fno_n_layers = 4
     args.fno_n_modes = (8, 8, 6)
@@ -178,6 +182,8 @@ if __name__ == "__main__":
         target_col_indices=args.target_col_indices,
         input_window_size=args.input_window_size,
         output_window_size=args.output_window_size,
+        forcings_transform=calculate_forcings_transform(),
+        forcings_required=args.forcings_required
     )
     
     print(f"Dataset sizes - Train: {len(train_ds)}, Val: {len(val_ds)}")

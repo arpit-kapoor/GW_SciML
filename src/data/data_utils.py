@@ -6,6 +6,7 @@ across different datasets and model architectures.
 """
 
 import os
+import numpy as np
 import pandas as pd
 import torch
 
@@ -80,6 +81,23 @@ def calculate_obs_transform(raw_data_dir, target_obs_cols, representative_file='
     # Clean up memory
     del df
     return obs_transform
+
+
+def calculate_forcings_transform():
+    """
+    Create a normalization transform for forcings data.
+    Uses pre-computed mean and std values for forcings normalization.
+    Returns:
+        Normalize: Transform object for forcings normalization
+    """
+    # Pre-computed mean and std for forcings
+    forcings_mean = np.array([ 1.48153188e+03,  9.42562257e-03,  3.84628900e-05, -8.05859849e-04])
+    forcings_std = np.array([7.04689144e+03, 8.24747365e-02, 7.88193443e-04, 5.29570033e-02])
+
+    # Create forcings transform
+    forcings_transform = Normalize(mean=forcings_mean, std=forcings_std)
+    
+    return forcings_transform
 
 
 def create_patch_datasets(dataset_class, patch_data_dir, coord_transform, obs_transform, **kwargs):

@@ -128,50 +128,22 @@ fi
 
 # Handle different modes
 if [ "$MODE" == "predict" ]; then
-    # Prediction mode - find latest checkpoint
-    BASE_DIR="${RESULTS_BASE_DIR}/${CONFIG_NAME}"
-    LATEST_RUN=$(ls -1td "$BASE_DIR"/training_* 2>/dev/null | head -1)
+    # Predict mode
+    ADDITIONAL_ARGS="$*"
     
-    if [ -z "$LATEST_RUN" ]; then
-        echo "Error: No previous training runs found for config '$CONFIG_NAME'"
-        echo "Base directory: $BASE_DIR"
-        echo ""
-        echo "Train a model first using:"
-        echo "  ./submit.sh $MODEL_TYPE $CONFIG_NAME"
-        exit 1
+    if [ -n "$ADDITIONAL_ARGS" ]; then
+        echo "Submitting ${MODEL_TYPE^^} prediction job with config '$CONFIG_NAME'"
+        [ -n "$*" ] && echo "  Additional args: $*"
+        # Base64 encode the arguments to avoid PBS quoting issues
+        ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0)
+        qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$PREDICT_PBS_SCRIPT"
+    else
+        echo "Submitting ${MODEL_TYPE^^} prediction job with config: $CONFIG_NAME"
+        qsub -v "CONFIG=${CONFIG_NAME}" "$PREDICT_PBS_SCRIPT"
     fi
-    
-    CHECKPOINT="$LATEST_RUN/checkpoints/latest_checkpoint.pth"
-    
-    if [ ! -f "$CHECKPOINT" ]; then
-        echo "Error: Checkpoint not found: $CHECKPOINT"
-        exit 1
-    fi
-    
-    echo "========================================="
-    echo "Generating ${MODEL_TYPE^^} predictions using checkpoint:"
-    echo "$CHECKPOINT"
-    echo "========================================="
-    echo ""
-    
-    # Build prediction arguments
-    PRED_ARGS="--model-path $CHECKPOINT --base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density --patch-data-subdir filter_patch --batch-size 256 --device auto"
-    
-    # Add any additional user arguments
-    if [ -n "$*" ]; then
-        PRED_ARGS="$PRED_ARGS $*"
-    fi
-    
-    echo "Submitting ${MODEL_TYPE^^} prediction job with config '$CONFIG_NAME'"
-    [ -n "$*" ] && echo "  Additional args: $*"
-    
-    # Base64 encode the arguments to avoid PBS quoting issues
-    PRED_ARGS_B64=$(echo "$PRED_ARGS" | base64 -w 0)
-    
-    qsub -v "CONFIG=${CONFIG_NAME},MODEL_PATH=${CHECKPOINT},PRED_ARGS_B64=${PRED_ARGS_B64}" "$PREDICT_PBS_SCRIPT"
     
     echo ""
-    echo "Results will be saved to: ${PREDICTIONS_BASE_DIR/${RESULTS_BASE_DIR%/*}\//}/${CONFIG_NAME}/"
+    echo "Predictions will be saved to: ${PREDICTIONS_BASE_DIR/${PREDICTIONS_BASE_DIR%/*}\//}/${CONFIG_NAME}/"
     
 elif [ "$MODE" == "resume" ]; then
     # Resume mode - find latest checkpoint

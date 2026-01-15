@@ -19,17 +19,17 @@ import cv2
 from tqdm import tqdm
 
 
-def select_nodes_by_variance(targets, n_target_cols, target_cols):
+def select_nodes_by_variance(targets, target_cols, n_nodes_to_select=2):
     """
     Select nodes with high variance (above 99th percentile) for each target column.
     
     Args:
         targets: Array of shape [N_samples, N_points, output_window_size, n_target_cols]
-        n_target_cols: Number of target columns
         target_cols: List of target column names
+        n_nodes_to_select: Number of nodes to select (default: 3)
         
     Returns:
-        Array of shape [5, n_target_cols] with selected node indices
+        Array of shape [n_nodes_to_select, n_target_cols] with selected node indices
     """
     # Compute variance for each node for each target column
     # Use first timestep for consistency
@@ -38,23 +38,34 @@ def select_nodes_by_variance(targets, n_target_cols, target_cols):
     
     selected_node_idx = []
     for col_idx, col_name in enumerate(target_cols):
-        p99 = np.percentile(node_variance[:, col_idx], 99)
-        print(f"{col_name} - 99th percentile variance: {p99:.6f}")
+
+        # Compute 5th and 95th percentiles
+        p50 = np.percentile(node_variance[:, col_idx], 50)
+        p99 = np.percentile(node_variance[:, col_idx], 98.8)
+        print(f"{col_name} - 50th percentile variance: {p50:.6f}, 99th percentile variance: {p99:.6f}")
         
-        # Identify nodes above 99th percentile for this column
-        node_idx_in_range = np.where(node_variance[:, col_idx] > p99)[0]
-        print(f"{col_name} - Number of nodes above 99th percentile: {len(node_idx_in_range)}")
+        # Identify nodes between 50th and 99th percentile for this column
+        node_idx_in_range = np.where((node_variance[:, col_idx] > p50) & (node_variance[:, col_idx] <= p99))[0]
+        print(f"{col_name} - Number of nodes between 50th and 99th percentile: {len(node_idx_in_range)}")
         
-        # Randomly select 5 nodes from those above 99th percentile
+        # Randomly select nodes from those between 50th and 99th percentile
         np.random.seed(42)  # For reproducibility
-        if len(node_idx_in_range) >= 5:
-            selected = np.random.choice(node_idx_in_range, size=(5, 1), replace=False)
+        if len(node_idx_in_range) >= n_nodes_to_select:
+            # Sort by variance and select at equal spacing
+            sorted_indices = np.argsort(node_variance[node_idx_in_range, col_idx])
+            
+            step = (len(sorted_indices)-1) / n_nodes_to_select
+            indices = [int(i * step) for i in range(1, n_nodes_to_select+1)]
+            selected = node_idx_in_range[sorted_indices[indices]].reshape(-1, 1)
+            # Print variance of selected nodes for debugging
+            selected_variances = node_variance[selected.flatten(), col_idx]
+            print(f"{col_name} - Selected node indices: {selected.flatten()}, Variances: {selected_variances}")
         else:
-            # If fewer than 5 nodes, take all and pad with random high-variance nodes
+            # If fewer than n_nodes_to_select nodes, take all and pad with random high-variance nodes
             selected = node_idx_in_range.reshape(-1, 1)
             # Pad with additional high-variance nodes
             sorted_indices = np.argsort(node_variance[:, col_idx])[::-1]
-            additional_needed = 5 - len(node_idx_in_range)
+            additional_needed = n_nodes_to_select - len(node_idx_in_range)
             for idx in sorted_indices:
                 if idx not in node_idx_in_range and additional_needed > 0:
                     selected = np.vstack([selected, idx])
@@ -62,7 +73,7 @@ def select_nodes_by_variance(targets, n_target_cols, target_cols):
         
         selected_node_idx.append(selected)
     
-    selected_node_idx = np.hstack(selected_node_idx)  # Shape: [5, n_target_cols]
+    selected_node_idx = np.hstack(selected_node_idx)  # Shape: [n_nodes_to_select, n_target_cols]
     print(f"Selected nodes shape: {selected_node_idx.shape}")
     
     return selected_node_idx
@@ -137,7 +148,11 @@ def create_scatter_comparison_plots(predictions, targets, output_path,
             
             ax.set_xlabel('Observed', fontsize=24)
             ax.set_ylabel('Predicted', fontsize=24)
-            ax.set_title(f'Node {sample_idx}, Timestep {timestep+1}\nCorr: {correlation:.3f}', 
+            if output_window_size == 1:
+                ax.set_title(f'Node {sample_idx} - Corr: {correlation:.3f}', 
+                             fontsize=24)
+            else:
+                ax.set_title(f'Node {sample_idx}, Timestep {timestep+1}\nCorr: {correlation:.3f}', 
                         fontsize=24)
             ax.tick_params(axis='both', which='major', labelsize=20)
             ax.grid(True, alpha=0.3)
@@ -152,8 +167,10 @@ def create_scatter_comparison_plots(predictions, targets, output_path,
     print(f"Scatter comparison plots saved to: {output_path}")
 
 
-def create_timeseries_comparison_plots(predictions, targets, col_name, timeseries_dir,
-                                       selected_node_idx=None, output_window_size=1):
+def create_timeseries_comparison_plots(predictions, targets, col_name, 
+                                       timeseries_dir,
+                                       selected_node_idx=None, 
+                                       output_window_size=1):
     """
     Create time series plots showing predictions vs observations over the temporal sequence.
     
@@ -192,12 +209,17 @@ def create_timeseries_comparison_plots(predictions, targets, col_name, timeserie
             # predictions shape: [N_samples, N_points, output_window_size]
             pred_at_timestep = predictions[:, sample_idx, timestep_idx]  # [N_samples]
             target_at_timestep = targets[:, sample_idx, timestep_idx]  # [N_samples]
+
+            print(f"Variance at node {sample_idx}: {np.var(target_at_timestep):.6f}")
+            print(f"MIN/MAX at node {sample_idx}: {target_at_timestep.min():.4f}/{target_at_timestep.max():.4f}")
+            print(f"MIN/MAX predictions at node {sample_idx}: {pred_at_timestep.min():.4f}/{pred_at_timestep.max():.4f}")
             
             # Create time array
             timesteps = np.arange(len(pred_at_timestep))
             ax.plot(timesteps, pred_at_timestep, 'r--', label='Predicted', linewidth=2)
             ax.plot(timesteps, target_at_timestep, 'b-', label='Observed', linewidth=2)
-            ax.set_xlabel('Simulation Time-step', fontsize=20)
+            if sample_idx == sample_indices[-1]:
+                ax.set_xlabel('Simulation Time-step', fontsize=20)
             ax.tick_params(axis='both', which='major', labelsize=16)
             ax.legend(fontsize=18)
             
@@ -205,8 +227,11 @@ def create_timeseries_comparison_plots(predictions, targets, col_name, timeserie
             mae = np.mean(np.abs(pred_at_timestep - target_at_timestep))
             
             ax.set_ylabel(f'{col_name}', fontsize=20)
-            ax.set_title(f'Node {sample_idx} - Timestep {timestep_idx+1}/{output_window_size}\n' + 
-                        f'MAE: {mae:.4f}', fontsize=20)
+            if output_window_size == 1:
+                ax.set_title(f'Node {sample_idx} - MAE: {mae:.2f}', fontsize=20)
+            else:
+                ax.set_title(f'Node {sample_idx} - Timestep {timestep_idx+1}/{output_window_size}\n' + 
+                            f'MAE: {mae:.2f}', fontsize=20)
             ax.grid(True, alpha=0.3, axis='y')
         
         plt.tight_layout()
@@ -453,8 +478,10 @@ def create_all_visualizations(results_dict, args):
     return error_stats
 
 
-def create_per_column_visualizations(results_dict, target_cols, target_col_indices, output_window_size,
-                                     results_dir, obs_transform, create_3d_plots=False):
+def create_per_column_visualizations(results_dict, target_cols, 
+                                     target_col_indices, output_window_size,
+                                     results_dir, obs_transform, 
+                                     create_3d_plots=False):
     """
     Create visualizations for each target column separately for both train and val datasets.
     
@@ -499,7 +526,9 @@ def create_per_column_visualizations(results_dict, target_cols, target_col_indic
         
         # Select nodes based on variance
         n_target_cols = len(target_cols)
-        selected_node_idx = select_nodes_by_variance(targets, n_target_cols, target_cols)
+        print(f"Selecting nodes based on variance for {n_target_cols} target columns...")
+        print(f"Target shape: {targets.shape}, target cols: {n_target_cols}")
+        selected_node_idx = select_nodes_by_variance(targets, target_cols)
         
         # Create visualizations for each target column
         for col_idx, col_name in enumerate(target_cols):
