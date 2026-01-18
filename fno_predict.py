@@ -17,6 +17,7 @@ from src.data.data_utils import (
     create_patch_datasets,
     make_collate_fn,
     reshape_multi_col_predictions,
+    calculate_forcings_transform,
 )
 from src.data.patch_dataset_multi_col import GWPatchDatasetMultiCol
 from src.models.neuralop.fno import FNOInterpolate
@@ -151,6 +152,15 @@ def main():
     if hasattr(saved_args, 'target_cols'):
         args.target_cols = saved_args.target_cols
         print(f"Using target columns from checkpoint: {args.target_cols}")
+
+    # Set forcings flag from checkpoint
+    if hasattr(saved_args, 'forcings_required'):
+        args.forcings_required = saved_args.forcings_required
+        print(f"Using forcings_required from checkpoint: {args.forcings_required}")
+    else:
+        args.forcings_required = False
+        print("forcings_required not found in checkpoint, defaulting to False")
+
     
     # Configure target columns
     args = configure_target_col_indices(args)
@@ -162,6 +172,7 @@ def main():
         args.raw_data_dir,
         target_obs_cols=['mass_concentration', 'head', 'pressure']
     )
+    forcings_transform = calculate_forcings_transform()
     
     # Create datasets with multi-column support
     print("\nCreating datasets...")
@@ -173,6 +184,8 @@ def main():
         target_col_indices=args.target_col_indices,
         input_window_size=args.input_window_size,
         output_window_size=args.output_window_size,
+        forcings_transform=forcings_transform,
+        forcings_required=args.forcings_required,
     )
     
     print(f"Train dataset length: {len(train_ds)}")
@@ -228,6 +241,23 @@ def main():
     print(f"Reshaped predictions to: {train_results['predictions'].shape}")
     print(f"Reshaped targets to: {train_results['targets'].shape}")
     
+    # Denormalize predictions and targets after reshaping
+    print("\nDenormalizing predictions and targets...")
+    train_results['predictions'] = denormalize_observations(
+        train_results['predictions'], obs_transform, args.target_col_indices
+    )
+    train_results['targets'] = denormalize_observations(
+        train_results['targets'], obs_transform, args.target_col_indices
+    )
+    val_results['predictions'] = denormalize_observations(
+        val_results['predictions'], obs_transform, args.target_col_indices
+    )
+    val_results['targets'] = denormalize_observations(
+        val_results['targets'], obs_transform, args.target_col_indices
+    )
+    print(f"Denormalized train predictions range: [{train_results['predictions'].min():.3f}, {train_results['predictions'].max():.3f}]")
+    print(f"Denormalized train targets range: [{train_results['targets'].min():.3f}, {train_results['targets'].max():.3f}]")
+    
     results_dict = {
         'train': train_results,
         'val': val_results
@@ -238,17 +268,16 @@ def main():
     
     # Compute and save metrics
     print("\nComputing metrics...")
-    metrics = compute_metrics(results_dict, args.target_cols, args.target_col_indices, obs_transform)
+    metrics = compute_metrics(results_dict, args.target_cols, args.target_col_indices, obs_transform=None)
     save_metrics(metrics, args.target_cols, args.results_dir)
     
-    # Create visualizations with per-column analysis
+    # Create visualizations
     create_per_column_visualizations(
         results_dict, 
         args.target_cols, 
         args.target_col_indices,
         args.output_window_size,
         args.results_dir,
-        obs_transform,
         create_3d_plots=getattr(args, 'create_3d_plots', False)
     )
     

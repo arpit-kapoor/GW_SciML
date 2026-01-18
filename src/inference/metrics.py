@@ -90,7 +90,7 @@ def denormalize_observations(normalized_data, obs_transform, target_col_indices)
     return denormalized
 
 
-def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform):
+def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform=None):
     """
     Compute relative L2 error, R² score, and KGE for each target column on train and val sets.
     
@@ -100,7 +100,7 @@ def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform
         results_dict: Dictionary containing train and val predictions and targets
         target_cols: List of target column names
         target_col_indices: List of target column indices
-        obs_transform: Normalize transform object for denormalization
+        obs_transform: Normalize transform object for denormalization (None if data already denormalized)
         
     Returns:
         Dictionary containing metrics for each dataset and target column
@@ -108,13 +108,18 @@ def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform
     metrics = {}
     
     for dataset_name in ['train', 'val']:
-        # Get normalized data
-        predictions_norm = results_dict[dataset_name]['predictions']  # [N_samples, N_points, output_window_size, n_target_cols]
-        targets_norm = results_dict[dataset_name]['targets']
+        # Get data (may be normalized or denormalized)
+        predictions_data = results_dict[dataset_name]['predictions']  # [N_samples, N_points, output_window_size, n_target_cols]
+        targets_data = results_dict[dataset_name]['targets']
         
-        # Denormalize to original scale
-        predictions = denormalize_observations(predictions_norm, obs_transform, target_col_indices)
-        targets = denormalize_observations(targets_norm, obs_transform, target_col_indices)
+        # Denormalize to original scale if transform provided
+        if obs_transform is not None:
+            predictions = denormalize_observations(predictions_data, obs_transform, target_col_indices)
+            targets = denormalize_observations(targets_data, obs_transform, target_col_indices)
+        else:
+            # Data is already denormalized
+            predictions = predictions_data
+            targets = targets_data
         
         metrics[dataset_name] = {}
         

@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N FNO_Predict
-#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1:gpu_model=A100
+#PBS -l select=1:ncpus=8:mem=64gb:ngpus=1:gpu_model=A100
 #PBS -l walltime=2:00:00
 #PBS -o /dev/null
 #PBS -e /dev/null
@@ -30,9 +30,42 @@ cd $PBS_O_WORKDIR/..
 # Environment
 PYTHON_ENV="/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python"
 PREDICTIONS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO_predictions"
+RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO"
+
+
 
 # Determine config name (defaults to 'default' if not specified)
 CONFIG_NAME="${CONFIG:-default}"
+
+# Load config if specified, otherwise use command line args
+if [ "$CONFIG_NAME" != "adhoc" ]; then
+    CONFIG_FILE="hpc/configs/fno/${CONFIG_NAME}.sh"
+    if [ -f "$CONFIG_FILE" ]; then
+        echo "Loading configuration from: $CONFIG_FILE"
+        source "$CONFIG_FILE"
+        echo "Configuration loaded successfully"
+    else
+        echo "Error: Config file $CONFIG_FILE not found"
+        echo "Available configs:"
+        ls -1 hpc/configs/fno/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
+        exit 1
+    fi
+else
+    echo "Using ad-hoc configuration (no config file)"
+    # Decode ARGS if provided as base64
+    if [ -n "${ARGS_B64:-}" ]; then
+        PRED_ARGS=$(echo "$ARGS_B64" | base64 -d)
+    else
+        PRED_ARGS="${ARGS:-}"
+    fi
+fi
+
+# Get model path and prediction args from environment
+if [ -z "$CHECKPOINT" ]; then
+    echo "Error: CHECKPOINT not provided"
+    exit 1
+fi
+
 
 # Create config-specific predictions directory
 CONFIG_PREDICTIONS_DIR="${PREDICTIONS_BASE_DIR}/${CONFIG_NAME}"
@@ -51,42 +84,54 @@ echo "GPU Information:"
 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.free --format=csv
 echo "=========================================="
 
-# Get model path and prediction args from environment
-if [ -z "$MODEL_PATH" ]; then
-    echo "Error: MODEL_PATH not provided"
+# If ARGS_B64 is provided with a config, decode and append it
+if [ "$CONFIG_NAME" != "adhoc" ] && [ -n "${ARGS_B64:-}" ]; then
+    ADDITIONAL_ARGS=$(echo "$ARGS_B64" | base64 -d)
+    PRED_ARGS="$PRED_ARGS $ADDITIONAL_ARGS"
+fi
+
+# Find the latest run to read checkpoint from
+BASE_DIR="${RESULTS_BASE_DIR}/${CONFIG_NAME}"
+LATEST_RUN=$(ls -1td "$BASE_DIR"/training_* 2>/dev/null | head -1)
+
+if [ -z "$LATEST_RUN" ]; then
+    echo "Error: No previous training runs found for config '$CONFIG_NAME'"
+    echo "Base directory: $BASE_DIR"
+    echo ""
+    echo "Train a model first using:"
+    echo "  ./submit.sh $MODEL_TYPE $CONFIG_NAME"
     exit 1
 fi
 
-if [ -z "$PRED_ARGS_B64" ]; then
-    echo "Error: PRED_ARGS_B64 not provided"
-    exit 1
-fi
+MODEL_PATH="$LATEST_RUN/checkpoints/$CHECKPOINT"
 
-# Decode base64-encoded prediction arguments
-PRED_ARGS=$(echo "$PRED_ARGS_B64" | base64 -d)
-
-# Verify model path exists
 if [ ! -f "$MODEL_PATH" ]; then
     echo "Error: Model checkpoint not found: $MODEL_PATH"
     exit 1
 fi
 
+echo "========================================="
+echo "Generating ${MODEL_TYPE^^} predictions using checkpoint:"
+echo "$MODEL_PATH"
+echo "========================================="
+echo ""
+
 # Append results directory to prediction args
-PREDICT_ARGS="$PRED_ARGS --results-dir $CONFIG_PREDICTIONS_DIR"
+PRED_ARGS="$PRED_ARGS --model-path $MODEL_PATH --results-dir $CONFIG_PREDICTIONS_DIR"
 
 # Display final command
 echo ""
-echo "Model checkpoint: $MODEL_PATH"
-echo "Prediction arguments: $PREDICT_ARGS"
+echo "Prediction arguments:"
+echo "$PRED_ARGS"
 echo ""
 echo "=========================================="
 echo ""
 echo "Executing command:"
-echo "$PYTHON_ENV -u fno_predict.py $PREDICT_ARGS"
+echo "$PYTHON_ENV -u fno_predict.py $PRED_ARGS"
 echo ""
 
 # Execute prediction with unbuffered output (-u flag)
-$PYTHON_ENV -u fno_predict.py $PREDICT_ARGS
+$PYTHON_ENV -u fno_predict.py $PRED_ARGS
 EXIT_CODE=$?
 
 echo ""

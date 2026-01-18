@@ -233,6 +233,23 @@ def main():
     print(f"Reshaped predictions to: {train_results['predictions'].shape}")
     print(f"Reshaped targets to: {train_results['targets'].shape}")
     
+    # Denormalize predictions and targets after reshaping
+    print("\nDenormalizing predictions and targets...")
+    train_results['predictions'] = denormalize_observations(
+        train_results['predictions'], obs_transform, args.target_col_indices
+    )
+    train_results['targets'] = denormalize_observations(
+        train_results['targets'], obs_transform, args.target_col_indices
+    )
+    val_results['predictions'] = denormalize_observations(
+        val_results['predictions'], obs_transform, args.target_col_indices
+    )
+    val_results['targets'] = denormalize_observations(
+        val_results['targets'], obs_transform, args.target_col_indices
+    )
+    print(f"Denormalized train predictions range: [{train_results['predictions'].min():.3f}, {train_results['predictions'].max():.3f}]")
+    print(f"Denormalized train targets range: [{train_results['targets'].min():.3f}, {train_results['targets'].max():.3f}]")
+    
     results_dict = {
         'train': train_results,
         'val': val_results
@@ -243,17 +260,16 @@ def main():
     
     # Compute and save metrics
     print("\nComputing metrics...")
-    metrics = compute_metrics(results_dict, args.target_cols, args.target_col_indices, obs_transform)
+    metrics = compute_metrics(results_dict, args.target_cols, args.target_col_indices, obs_transform=None)
     save_metrics(metrics, args.target_cols, args.results_dir)
     
-    # Create visualizations with per-column analysis
+    # Create visualizations
     create_per_column_visualizations(
         results_dict, 
         args.target_cols, 
         args.target_col_indices,
         args.output_window_size,
         args.results_dir,
-        obs_transform,
         create_3d_plots=getattr(args, 'create_3d_plots', False)
     )
     

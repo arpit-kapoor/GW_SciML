@@ -480,8 +480,7 @@ def create_all_visualizations(results_dict, args):
 
 def create_per_column_visualizations(results_dict, target_cols, 
                                      target_col_indices, output_window_size,
-                                     results_dir, obs_transform, 
-                                     create_3d_plots=False):
+                                     results_dir, create_3d_plots=False):
     """
     Create visualizations for each target column separately for both train and val datasets.
     
@@ -489,16 +488,13 @@ def create_per_column_visualizations(results_dict, target_cols,
     Can be reused by FNO, GINO, and other multi-column prediction models.
     
     Args:
-        results_dict (dict): Dictionary with 'train' and 'val' results
+        results_dict (dict): Dictionary with 'train' and 'val' results (already denormalized)
         target_cols (list): List of target column names
         target_col_indices (list): List of target column indices
         output_window_size (int): Number of output timesteps
         results_dir (str): Base directory for saving results
-        obs_transform: Normalize transform object for denormalization
         create_3d_plots (bool): Whether to create 3D plots and videos
     """
-    from src.inference.metrics import denormalize_observations
-    
     print("\nCreating per-column visualizations...")
     
     # Process both train and val datasets
@@ -511,16 +507,12 @@ def create_per_column_visualizations(results_dict, target_cols,
         dataset_dir = os.path.join(results_dir, dataset_name)
         os.makedirs(dataset_dir, exist_ok=True)
         
-        # Get normalized data
-        predictions_norm = results_dict[dataset_name]['predictions']  # [N_samples, N_points, T, n_cols]
-        targets_norm = results_dict[dataset_name]['targets']
+        # Get already denormalized data
+        predictions = results_dict[dataset_name]['predictions']  # [N_samples, N_points, T, n_cols]
+        targets = results_dict[dataset_name]['targets']
         coords_data = results_dict[dataset_name]['coords']
         
-        # Denormalize to original scale for visualization
-        predictions = denormalize_observations(predictions_norm, obs_transform, target_col_indices)
-        targets = denormalize_observations(targets_norm, obs_transform, target_col_indices)
-        
-        print(f"Denormalized {dataset_name} predictions to original scale")
+        print(f"{dataset_name} data is already denormalized")
         print(f"  Predictions range: [{predictions.min():.4f}, {predictions.max():.4f}]")
         print(f"  Targets range: [{targets.min():.4f}, {targets.max():.4f}]")
         

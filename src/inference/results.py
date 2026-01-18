@@ -8,6 +8,7 @@ import os
 import pickle
 import datetime as dt
 import numpy as np
+from .metrics import denormalize_observations
 
 
 def create_results_directory(base_dir, experiment_name=None):
@@ -79,7 +80,7 @@ def organize_and_save_results(results_dict, args):
     Orchestrate saving all results including train/val predictions and metadata.
     
     Args:
-        results_dict (dict): Dictionary with 'train' and 'val' results
+        results_dict (dict): Dictionary with 'train' and 'val' results (already denormalized)
         args (argparse.Namespace): Arguments containing configuration
     """
     print("Organizing and saving results...")

@@ -18,6 +18,7 @@ from src.data.patch_dataset_multi_col import GWPatchDatasetMultiCol
 from src.data.batch_sampler import PatchBatchSampler
 from src.data.data_utils import (
     calculate_coord_transform,
+    calculate_forcings_transform,
     calculate_obs_transform,
     create_patch_datasets,
     make_collate_fn,
@@ -97,6 +98,9 @@ def define_model_parameters(args):
     args.lifting_channels = 64
     args.projection_channel_ratio = 2
     args.in_channels = args.input_window_size * args.n_target_cols
+    if args.forcings_required:
+        args.forcings_dim = 4
+        args.in_channels += args.forcings_dim
     args.out_channels = args.output_window_size * args.n_target_cols
     args.latent_query_dims = (16, 16, 8)
     
@@ -185,6 +189,8 @@ if __name__ == "__main__":
         target_col_indices=args.target_col_indices,
         input_window_size=args.input_window_size,
         output_window_size=args.output_window_size,
+        forcings_required=args.forcings_required,
+        forcings_transform=calculate_forcings_transform(),
     )
     
     print(f"Dataset sizes - Train: {len(train_ds)}, Val: {len(val_ds)}")

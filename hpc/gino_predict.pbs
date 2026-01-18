@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N GINO_Predict
-#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1:gpu_model=A100
+#PBS -l select=1:ncpus=8:mem=64gb:ngpus=1:gpu_model=A100
 #PBS -l walltime=2:00:00
 #PBS -o /dev/null
 #PBS -e /dev/null

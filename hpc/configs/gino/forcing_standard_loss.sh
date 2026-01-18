@@ -17,6 +17,7 @@ TRAIN_ARGS="
 --lambda-conc-focus 0.0
 "
 
+
 PRED_ARGS="--base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density
 --patch-data-subdir filter_patch_all_ts
 --batch-size 256

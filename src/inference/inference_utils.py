@@ -141,7 +141,7 @@ def generate_predictions(model, dataset, args, dataset_name='dataset',
         collate_fn (callable, optional): Custom collate function
         
     Returns:
-        dict: Dictionary with 'predictions', 'targets', 'coords', 'metadata'
+        dict: Dictionary with 'predictions', 'targets', 'coords', 'metadata' (normalized)
     """
     print(f"\nGenerating predictions for {dataset_name} dataset...")
     
