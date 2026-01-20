@@ -93,19 +93,37 @@ python gino_train.py --resume-from /path/to/checkpoint.pth
 #### Prediction/Inference
 
 ```bash
-# Generate GINO predictions
+# Generate GINO predictions (full resolution)
 python gino_predict.py \
     --model-path /path/to/model.pth \
     --base-data-dir /path/to/data \
     --patch-data-subdir filter_patch \
     --batch-size 256
 
-# Generate FNO predictions
+# Generate FNO predictions (full resolution)
 python fno_predict.py \
     --model-path /path/to/model.pth \
     --base-data-dir /path/to/data \
     --batch-size 256 \
     --create-3d-plots  # Optional: create 3D visualizations
+
+# Test at different resolutions (resolution generalization)
+python gino_predict.py \
+    --model-path /path/to/model.pth \
+    --resolution-ratio 0.5  # Test at 50% resolution
+
+python fno_predict.py \
+    --model-path /path/to/model.pth \
+    --resolution-ratio 0.25 \
+    --resolution-seed 123  # Test at 25% resolution with custom seed
+
+# Multi-resolution evaluation loop
+for ratio in 1.0 0.75 0.5 0.25 0.1; do
+    python fno_predict.py \
+        --model-path /path/to/model.pth \
+        --resolution-ratio $ratio \
+        --results-dir results_res_${ratio}
+done
 ```
 
 ## Available Configurations
@@ -138,6 +156,14 @@ Pre-configured training setups are located in `hpc/configs/{gino,fno}/`:
 | `--lambda-conc-focus` | Concentration focus weight (variance-aware loss) | 0.5 |
 | `--resume-from` | Path to checkpoint to resume from | None |
 | `--device` | Device (cuda/cpu/auto) | auto |
+
+### Inference-Specific Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------||
+| `--resolution-ratio` | Ratio of nodes to keep (0 < ratio ≤ 1.0) for resolution testing | 1.0 |
+| `--resolution-seed` | Random seed for reproducible subsampling | 42 |
+| `--create-3d-plots` | Create 3D scatter plots and videos (FNO only) | False |
 
 ## Monitoring and Results
 

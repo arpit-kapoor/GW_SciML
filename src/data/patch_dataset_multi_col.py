@@ -28,7 +28,9 @@ class GWPatchDatasetMultiCol(Dataset):
         output_window_size=10,
         target_col_indices=None,
         forcings_transform=None,
-        forcings_required=False
+        forcings_required=False,
+        resolution_ratio=1.0,
+        resolution_seed=42
     ):
         """
         Initialize the GWPatchDatasetMultiCol.
@@ -44,6 +46,8 @@ class GWPatchDatasetMultiCol(Dataset):
             target_col_indices (list of int, optional): Indices of target columns to extract and concatenate.
             forcings_transform (callable, optional): Transform function for forcings data.
             forcings_required (bool): Whether forcings data is required for the model.
+            resolution_ratio (float): Ratio of nodes to keep in each patch (0 < ratio <= 1.0). Default is 1.0 (no subsampling).
+            resolution_seed (int): Random seed for reproducible subsampling. Default is 42.
         """
         self.data_path = data_path
         self.dataset = dataset
@@ -52,6 +56,8 @@ class GWPatchDatasetMultiCol(Dataset):
         self.val_ratio = val_ratio
         self.forcings_transform = forcings_transform 
         self.forcings_required = forcings_required
+        self.resolution_ratio = resolution_ratio
+        self.resolution_seed = resolution_seed
 
 
         # Load and process patch data
@@ -59,7 +65,9 @@ class GWPatchDatasetMultiCol(Dataset):
             data_path,
             val_ratio=val_ratio,
             dataset=dataset,
-            target_col_indices=target_col_indices
+            target_col_indices=target_col_indices,
+            resolution_ratio=resolution_ratio,
+            resolution_seed=resolution_seed
         )
         
         # Compute weights based on temporal variances across all patches
@@ -176,7 +184,9 @@ class GWPatchDatasetMultiCol(Dataset):
         data_path,
         val_ratio=0.3,
         dataset='train',
-        target_col_indices=None
+        target_col_indices=None,
+        resolution_ratio=1.0,
+        resolution_seed=42
     ):
         """
         Load patch data from the data directory with multi-column support.
@@ -186,11 +196,16 @@ class GWPatchDatasetMultiCol(Dataset):
             val_ratio (float): Validation ratio.
             dataset (str): Dataset type, either 'train' or 'val'.
             target_col_indices (list of int, optional): Indices of target columns to extract and concatenate.
+            resolution_ratio (float): Ratio of nodes to keep in each patch (0 < ratio <= 1.0).
+            resolution_seed (int): Random seed for reproducible subsampling.
 
         Returns:
             list: List of patch data dictionaries, each containing patch_id, core/ghost coords and obs.
         """
         patch_data = []
+        
+        # Set random seed for reproducible subsampling
+        rng = np.random.RandomState(resolution_seed)
 
         for idx, patch_dir in enumerate(sorted(os.listdir(data_path))):
             # Skip hidden files/directories
@@ -215,6 +230,25 @@ class GWPatchDatasetMultiCol(Dataset):
 
             # Extract patch_id from directory name
             patch_id = int(patch_dir.split('_')[-1])
+            
+            # Apply resolution subsampling to core nodes (not ghost nodes)
+            n_core_points = core_coords.shape[0]
+            if resolution_ratio < 1.0:
+                # Calculate number of points to keep (ensure at least 1)
+                n_subsample = max(1, int(n_core_points * resolution_ratio))
+                
+                # Generate random indices for subsampling
+                subsample_indices = rng.choice(n_core_points, size=n_subsample, replace=False)
+                subsample_indices = np.sort(subsample_indices)  # Sort for consistency
+                
+                # Apply subsampling to core data only
+                core_coords = core_coords[subsample_indices]
+                core_obs = core_obs[:, subsample_indices, :]  # [time, n_subsample, n_cols]
+                core_forcings = core_forcings[:, subsample_indices, :]  # [time, n_subsample, n_forcings]
+                
+                # Ghost nodes remain unchanged for boundary consistency
+            else:
+                n_subsample = n_core_points
             
             # Compute temporal variances for mass concentration (before any transforms)
             # Use training data only for variance computation

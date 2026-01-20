@@ -167,6 +167,9 @@ def main():
     
     # Create datasets with multi-column support
     print("\nCreating datasets...")
+    if args.resolution_ratio < 1.0:
+        print(f"Using resolution ratio: {args.resolution_ratio} (subsampling to {args.resolution_ratio*100:.1f}% of nodes)")
+        print(f"Using resolution seed: {args.resolution_seed}")
     train_ds, val_ds = create_patch_datasets(
         dataset_class=GWPatchDatasetMultiCol,
         patch_data_dir=args.patch_data_dir,
@@ -177,6 +180,8 @@ def main():
         output_window_size=args.output_window_size,
         forcings_transform=forcings_transform,
         forcings_required=args.forcings_required,
+        resolution_ratio=args.resolution_ratio,
+        resolution_seed=args.resolution_seed,
     )
     
     print(f"Train dataset length: {len(train_ds)}")

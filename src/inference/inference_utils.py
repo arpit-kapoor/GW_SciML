@@ -53,6 +53,12 @@ def setup_inference_arguments(description, default_base_data_dir, default_result
     parser.add_argument('--batch-size', type=int, default=32,
                        help='Batch size for inference')
     
+    # Resolution parameters for testing at different spatial resolutions
+    parser.add_argument('--resolution-ratio', type=float, default=1.0,
+                       help='Ratio of nodes to keep in each patch (0 < ratio <= 1.0). Default is 1.0 (no subsampling)')
+    parser.add_argument('--resolution-seed', type=int, default=42,
+                       help='Random seed for reproducible subsampling. Default is 42')
+    
     # Device configuration
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use (cuda, cpu, or auto)')
