@@ -59,6 +59,10 @@ def setup_inference_arguments(description, default_base_data_dir, default_result
     parser.add_argument('--resolution-seed', type=int, default=42,
                        help='Random seed for reproducible subsampling. Default is 42')
     
+    # Output control
+    parser.add_argument('--metrics-only', action='store_true', default=False,
+                       help='Only save metrics and metadata (no arrays or plots) to save disk space')
+    
     # Device configuration
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use (cuda, cpu, or auto)')

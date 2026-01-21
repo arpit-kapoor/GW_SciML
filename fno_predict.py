@@ -276,19 +276,24 @@ def main():
     metrics = compute_metrics(results_dict, args.target_cols, args.target_col_indices, obs_transform=None)
     save_metrics(metrics, args.target_cols, args.results_dir)
     
-    # Create visualizations
-    create_per_column_visualizations(
-        results_dict, 
-        args.target_cols, 
-        args.target_col_indices,
-        args.output_window_size,
-        args.results_dir,
-        create_3d_plots=getattr(args, 'create_3d_plots', False)
-    )
+    # Create visualizations only if not metrics_only
+    if not args.metrics_only:
+        create_per_column_visualizations(
+            results_dict, 
+            args.target_cols, 
+            args.target_col_indices,
+            args.output_window_size,
+            args.results_dir,
+            create_3d_plots=getattr(args, 'create_3d_plots', False)
+        )
+    else:
+        print("\nSkipping visualizations (--metrics-only flag enabled)")
     
     print("\n" + "="*60)
     print("Prediction generation complete!")
     print(f"Results saved to: {args.results_dir}")
+    if args.metrics_only:
+        print("Mode: Metrics only (arrays and plots skipped)")
     print("="*60)
 
 

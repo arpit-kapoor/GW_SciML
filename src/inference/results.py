@@ -5,6 +5,7 @@ Handles saving predictions, metadata, and organizing output directories.
 """
 
 import os
+import json
 import pickle
 import datetime as dt
 import numpy as np
@@ -59,9 +60,9 @@ def save_predictions_to_disk(predictions, targets, coords, output_dir, prefix=''
     print(f"Saved {prefix}predictions, targets, and coords to {output_dir}")
 
 
-def save_metadata(metadata, output_dir, filename='metadata.pkl'):
+def save_metadata(metadata, output_dir, filename='metadata.json'):
     """
-    Save metadata dictionary to pickle file.
+    Save metadata dictionary to JSON file.
     
     Args:
         metadata (dict): Dictionary containing metadata
@@ -69,8 +70,26 @@ def save_metadata(metadata, output_dir, filename='metadata.pkl'):
         filename (str): Output filename
     """
     filepath = os.path.join(output_dir, filename)
-    with open(filepath, 'wb') as f:
-        pickle.dump(metadata, f)
+    
+    # Convert numpy types to Python types for JSON serialization
+    def convert_to_serializable(obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: convert_to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(item) for item in obj]
+        else:
+            return obj
+    
+    serializable_metadata = convert_to_serializable(metadata)
+    
+    with open(filepath, 'w') as f:
+        json.dump(serializable_metadata, f, indent=2)
     
     print(f"Saved metadata to {filepath}")
 
@@ -85,38 +104,65 @@ def organize_and_save_results(results_dict, args):
     """
     print("Organizing and saving results...")
     
-    # Save train results
-    if 'train' in results_dict:
-        save_predictions_to_disk(
-            results_dict['train']['predictions'],
-            results_dict['train']['targets'],
-            results_dict['train']['coords'],
-            args.results_dir,
-            prefix='train_'
-        )
+    metrics_only = getattr(args, 'metrics_only', False)
     
-    # Save validation results
-    if 'val' in results_dict:
-        save_predictions_to_disk(
-            results_dict['val']['predictions'],
-            results_dict['val']['targets'],
-            results_dict['val']['coords'],
-            args.results_dir,
-            prefix='val_'
-        )
+    # Save arrays only if metrics_only is False
+    if not metrics_only:
+        # Save train results
+        if 'train' in results_dict:
+            save_predictions_to_disk(
+                results_dict['train']['predictions'],
+                results_dict['train']['targets'],
+                results_dict['train']['coords'],
+                args.results_dir,
+                prefix='train_'
+            )
+        
+        # Save validation results
+        if 'val' in results_dict:
+            save_predictions_to_disk(
+                results_dict['val']['predictions'],
+                results_dict['val']['targets'],
+                results_dict['val']['coords'],
+                args.results_dir,
+                prefix='val_'
+            )
+    else:
+        print("Skipping array saving (--metrics-only flag enabled)")
     
-    # Compile and save metadata
+    # Compile metadata with dataset info
     metadata = {
         'args': vars(args),
         'timestamp': dt.datetime.now().isoformat(),
+        'dataset_info': {}
     }
     
-    if 'train' in results_dict and 'metadata' in results_dict['train']:
-        metadata['train_metadata'] = results_dict['train']['metadata']
-    
-    if 'val' in results_dict and 'metadata' in results_dict['val']:
-        metadata['val_metadata'] = results_dict['val']['metadata']
+    # Add dataset-level info
+    for dataset_name in ['train', 'val']:
+        if dataset_name in results_dict:
+            data = results_dict[dataset_name]
+            predictions_shape = list(data['predictions'].shape)
+            
+            # Count unique patches
+            n_patches = len(set([m['patch_id'] for m in data['metadata']]))
+            
+            metadata['dataset_info'][dataset_name] = {
+                'n_samples': predictions_shape[0],
+                'n_points': predictions_shape[1],
+                'n_timesteps': predictions_shape[2],
+                'n_vars': predictions_shape[3],
+                'predictions_shape': predictions_shape,
+                'n_patches': n_patches,
+                'resolution_ratio': getattr(args, 'resolution_ratio', 1.0)
+            }
+            
+            # Add per-sample metadata only if not metrics_only
+            if not metrics_only:
+                metadata[f'{dataset_name}_metadata'] = data['metadata']
     
     save_metadata(metadata, args.results_dir)
     
-    print(f"All results saved to: {args.results_dir}")
+    if metrics_only:
+        print(f"Metrics and metadata saved to: {args.results_dir}")
+    else:
+        print(f"All results saved to: {args.results_dir}")

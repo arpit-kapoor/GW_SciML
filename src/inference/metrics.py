@@ -8,8 +8,57 @@ Provides functions for:
 """
 
 import os
+import json
 import numpy as np
+import pandas as pd
 from sklearn.metrics import r2_score
+
+
+def compute_normalized_mae(predictions, observations):
+    """
+    Compute Mean Absolute Error normalized by standard deviation of observations.
+    
+    NMAE = MAE / std(observations)
+    
+    Args:
+        predictions (np.ndarray): Predicted values (1D array)
+        observations (np.ndarray): Observed/target values (1D array)
+        
+    Returns:
+        float: Normalized MAE
+    """
+    # Ensure inputs are 1D
+    pred_flat = predictions.flatten()
+    obs_flat = observations.flatten()
+    
+    # Compute MAE
+    mae = np.mean(np.abs(pred_flat - obs_flat))
+    
+    # Normalize by std of observations
+    obs_std = np.std(obs_flat)
+    
+    # Avoid division by zero
+    nmae = mae / (obs_std + 1e-10)
+    
+    return nmae
+
+
+def compute_r2_score(predictions, observations):
+    """
+    Compute R² score (coefficient of determination).
+    
+    This function is kept for potential future use but not called by default.
+    
+    Args:
+        predictions (np.ndarray): Predicted values
+        observations (np.ndarray): Observed/target values
+        
+    Returns:
+        float: R² score
+    """
+    pred_flat = predictions.flatten()
+    obs_flat = observations.flatten()
+    return r2_score(obs_flat, pred_flat)
 
 
 def compute_kge(simulations, observations):
@@ -133,22 +182,22 @@ def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform
             col_predictions_flat = col_predictions.flatten()
             col_targets_flat = col_targets.flatten()
             
-            # 1. Relative L2 Error (using numpy implementation)
+            # 1. Normalized MAE
+            nmae = compute_normalized_mae(col_predictions_flat, col_targets_flat)
+            
+            # 2. Relative L2 Error (using numpy implementation)
             # Relative L2 = ||pred - target||_2 / ||target||_2
             diff = col_predictions_flat - col_targets_flat
             l2_error = np.linalg.norm(diff)
             l2_norm_target = np.linalg.norm(col_targets_flat)
             rel_l2_error = l2_error / (l2_norm_target + 1e-10)
             
-            # 2. R² Score
-            r2 = r2_score(col_targets_flat, col_predictions_flat)
-            
             # 3. Kling-Gupta Efficiency (KGE)
             kge_results = compute_kge(col_predictions_flat, col_targets_flat)
             
             metrics[dataset_name][col_name] = {
+                'nmae': nmae,
                 'rel_l2_error': rel_l2_error,
-                'r2_score': r2,
                 'kge': kge_results['kge'],
                 'kge_r': kge_results['r'],
                 'kge_alpha': kge_results['alpha'],
@@ -160,45 +209,38 @@ def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform
 
 def save_metrics(metrics, target_cols, results_dir):
     """
-    Save computed metrics to a text file.
+    Save computed metrics to a CSV file in long format.
+    
+    Format (Option B - Long Format):
+    metric_name | variable | train | val
     
     Args:
         metrics: Dictionary containing metrics for each dataset and target column
         target_cols: List of target column names
         results_dir: Directory to save metrics file
     """
-    metrics_file = os.path.join(results_dir, 'metrics.txt')
+    metrics_file = os.path.join(results_dir, 'metrics.csv')
     
-    with open(metrics_file, 'w') as f:
-        f.write("=" * 80 + "\n")
-        f.write("Model Performance Metrics (Relative & Dimensionless)\n")
-        f.write("All metrics computed on denormalized (original scale) data\n")
-        f.write("=" * 80 + "\n\n")
-        
-        for dataset_name in ['train', 'val']:
-            f.write(f"\n{dataset_name.upper()} SET\n")
-            f.write("-" * 80 + "\n")
-            
-            for col_name in target_cols:
-                col_metrics = metrics[dataset_name][col_name]
-                
-                f.write(f"\n{col_name}:\n")
-                f.write(f"  Relative L2 Error:  {col_metrics['rel_l2_error']:.6f}  (0.0 is perfect)\n")
-                f.write(f"  R² Score:           {col_metrics['r2_score']:.6f}  (1.0 is perfect)\n")
-                f.write(f"\n")
-                f.write(f"  Kling-Gupta Efficiency:\n")
-                f.write(f"    KGE:              {col_metrics['kge']:.6f}  (1.0 is perfect)\n")
-                f.write(f"      - r (correlation):     {col_metrics['kge_r']:.4f}  (1.0 is perfect)\n")
-                f.write(f"      - alpha (variability): {col_metrics['kge_alpha']:.4f}  (1.0 is perfect)\n")
-                f.write(f"      - beta (bias ratio):   {col_metrics['kge_beta']:.4f}  (1.0 is perfect)\n")
-            
-            f.write("\n")
-        
-        f.write("=" * 80 + "\n")
-        f.write("\nMetric Interpretation:\n")
-        f.write("  - Relative L2 Error: Dimensionless error normalized by target magnitude\n")
-        f.write("  - R² Score: Coefficient of determination (fraction of variance explained)\n")
-        f.write("  - KGE: Combines correlation, variability, and bias (preferred in hydrogeology)\n")
-        f.write("=" * 80 + "\n")
+    # Build list of rows for DataFrame
+    rows = []
     
-    print(f"Metrics saved to: {metrics_file}")
+    # Metrics to extract (in desired order)
+    metric_names = ['nmae', 'rel_l2_error', 'kge', 'kge_r', 'kge_alpha', 'kge_beta']
+    
+    for metric_name in metric_names:
+        for col_name in target_cols:
+            row = {
+                'metric_name': metric_name,
+                'variable': col_name,
+                'train': metrics['train'][col_name][metric_name],
+                'val': metrics['val'][col_name][metric_name]
+            }
+            rows.append(row)
+    
+    # Create DataFrame and save to CSV
+    df = pd.DataFrame(rows)
+    df.to_csv(metrics_file, index=False, float_format='%.6f')
+    
+    print(f"Saved metrics to {metrics_file}")
+    print("\nMetrics Preview:")
+    print(df.head(10).to_string(index=False))

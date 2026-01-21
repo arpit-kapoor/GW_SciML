@@ -100,35 +100,54 @@ if [ ! -f "$MODEL_PATH" ]; then
 fi
 
 echo "========================================="
-echo "Generating ${MODEL_TYPE^^} predictions using checkpoint:"
+echo "Generating GINO predictions using checkpoint:"
 echo "$MODEL_PATH"
 echo "========================================="
 echo ""
 
-# Append results directory to prediction args
-PRED_ARGS="$PRED_ARGS --model-path $MODEL_PATH --results-dir $CONFIG_PREDICTIONS_DIR"
+# Set default resolution ratios if not provided
+RESOLUTION_RATIOS="${RESOLUTION_RATIOS:-0.2 0.4 0.6 0.8 1.0}"
 
-# Display final command
-echo ""
-echo "Prediction arguments:"
-echo "$PRED_ARGS"
+for resolution_ratio in $RESOLUTION_RATIOS; do
+
+    PREDICTION_DIR="${CONFIG_PREDICTIONS_DIR}/resolution_${resolution_ratio}"
+    
+    echo "Running predictions at resolution ratio: $resolution_ratio"
+    echo "Predictions will be saved to: $PREDICTION_DIR"
+
+    # Build command with current resolution
+    CURRENT_PRED_ARGS="$PRED_ARGS --resolution-ratio $resolution_ratio --model-path $MODEL_PATH --results-dir $PREDICTION_DIR"
+
+    # Display final command
+    echo ""
+    echo "Prediction arguments:"
+    echo "$CURRENT_PRED_ARGS"
+    echo ""
+    echo "=========================================="
+    echo ""
+    echo "Executing command:"
+    echo "$PYTHON_ENV -u gino_predict.py $CURRENT_PRED_ARGS"
+    echo ""
+
+    # Execute prediction with unbuffered output (-u flag)
+    $PYTHON_ENV -u gino_predict.py $CURRENT_PRED_ARGS
+    EXIT_CODE=$?
+
+    echo ""
+    echo "=========================================="
+    echo "Prediction for resolution $resolution_ratio completed"
+    echo "Exit code: $EXIT_CODE"
+    echo "End time: $(date)"
+    echo "Predictions saved to: $PREDICTION_DIR"
+    echo "=========================================="
+    echo ""
+
+done
+
 echo ""
 echo "=========================================="
-echo ""
-echo "Executing command:"
-echo "$PYTHON_ENV -u gino_predict.py $PRED_ARGS"
-echo ""
-
-# Execute prediction with unbuffered output (-u flag)
-$PYTHON_ENV -u gino_predict.py $PRED_ARGS
-EXIT_CODE=$?
-
-echo ""
-echo "=========================================="
-echo "Prediction generation completed"
-echo "Exit code: $EXIT_CODE"
-echo "End time: $(date)"
-echo "Predictions saved to: $CONFIG_PREDICTIONS_DIR"
+echo "All predictions completed"
+echo "Results saved to: $CONFIG_PREDICTIONS_DIR"
 echo "=========================================="
 
-exit $EXIT_CODE
+

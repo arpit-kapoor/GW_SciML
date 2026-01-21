@@ -14,17 +14,7 @@ exec > "$LOG_FILE" 2>&1
 echo "Job started on $(hostname) at $(date)"
 echo "Job ID: $PBS_JOBID"
 
-# FNOInterpolate prediction with dynamic arguments
-#
-# Usage: Called via submit_fno.sh with --predict flag
-#   ./submit_fno.sh default --predict
-#   ./submit_fno.sh var_loss --predict
-#
-# Environment variables:
-#   CONFIG        : Configuration name (determines output directory)
-#   MODEL_PATH    : Path to model checkpoint
-#   PRED_ARGS     : Prediction arguments (constructed by submit_fno.sh)
-
+# Change to project directory
 cd $PBS_O_WORKDIR/..
 
 # Environment
@@ -116,30 +106,50 @@ echo "$MODEL_PATH"
 echo "========================================="
 echo ""
 
-# Append results directory to prediction args
-PRED_ARGS="$PRED_ARGS --model-path $MODEL_PATH --results-dir $CONFIG_PREDICTIONS_DIR"
 
-# Display final command
-echo ""
-echo "Prediction arguments:"
-echo "$PRED_ARGS"
+# Set default resolution ratios if not provided
+RESOLUTION_RATIOS="${RESOLUTION_RATIOS:-0.2 0.4 0.6 0.8 1.0}"
+
+for resolution_ratio in $RESOLUTION_RATIOS; do
+
+    PREDICTION_DIR="${CONFIG_PREDICTIONS_DIR}/resolution_${resolution_ratio}"
+    
+    echo "Running predictions at resolution ratio: $resolution_ratio"
+    echo "Predictions will be saved to: $PREDICTION_DIR"
+
+    # Build command with current resolution
+    CURRENT_PRED_ARGS="$PRED_ARGS --resolution-ratio $resolution_ratio --model-path $MODEL_PATH --results-dir $PREDICTION_DIR"
+
+    # Display final command
+    echo ""
+    echo "Prediction arguments:"
+    echo "$CURRENT_PRED_ARGS"
+    echo ""
+    echo "=========================================="
+    echo ""
+    echo "Executing command:"
+    echo "$PYTHON_ENV -u fno_predict.py $CURRENT_PRED_ARGS"
+    echo ""
+
+    # Execute prediction with unbuffered output (-u flag)
+    $PYTHON_ENV -u fno_predict.py $CURRENT_PRED_ARGS
+    EXIT_CODE=$?
+
+    echo ""
+    echo "=========================================="
+    echo "Prediction for resolution $resolution_ratio completed"
+    echo "Exit code: $EXIT_CODE"
+    echo "End time: $(date)"
+    echo "Predictions saved to: $PREDICTION_DIR"
+    echo "=========================================="
+    echo ""
+
+done
+
 echo ""
 echo "=========================================="
-echo ""
-echo "Executing command:"
-echo "$PYTHON_ENV -u fno_predict.py $PRED_ARGS"
-echo ""
-
-# Execute prediction with unbuffered output (-u flag)
-$PYTHON_ENV -u fno_predict.py $PRED_ARGS
-EXIT_CODE=$?
-
-echo ""
-echo "=========================================="
-echo "Prediction generation completed"
-echo "Exit code: $EXIT_CODE"
-echo "End time: $(date)"
-echo "Predictions saved to: $CONFIG_PREDICTIONS_DIR"
+echo "All predictions completed"
+echo "Results saved to: $CONFIG_PREDICTIONS_DIR"
 echo "=========================================="
 
 # PBS Resource Usage Summary
