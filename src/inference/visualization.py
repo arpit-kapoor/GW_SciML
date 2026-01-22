@@ -331,7 +331,7 @@ def create_3d_spatial_plots(predictions, targets, coords, output_dir,
     
     print(f"Creating 3D spatial plots for {n_samples} samples...")
     
-    for sample_idx in tqdm(range(n_samples), desc="Creating 3D plots"):
+    for sample_idx in tqdm(range(n_samples-1, n_samples), desc="Creating 3D plots"):
         # Get data for this sample
         coords_sample = coords[sample_idx]
         pred_sample = predictions[sample_idx, :len(coords_sample), timestep]
@@ -572,9 +572,9 @@ def create_per_column_visualizations(results_dict, target_cols,
                 scatter_dir = create_3d_spatial_plots(col_predictions, col_targets, coords_data,
                                                      col_dir, variable_name=col_name)
                 
-                # 5. Create video from 3D plots
-                video_path = os.path.join(col_dir, f'{col_name}_3d_scatter_plots_video.mp4')
-                create_video_from_images(scatter_dir, video_path)
+                # # 5. Create video from 3D plots
+                # video_path = os.path.join(col_dir, f'{col_name}_3d_scatter_plots_video.mp4')
+                # create_video_from_images(scatter_dir, video_path)
             else:
                 print(f"Skipping 3D plots for {col_name} ({dataset_name}) (disabled)")
         

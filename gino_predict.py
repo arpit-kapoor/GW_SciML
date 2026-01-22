@@ -269,14 +269,14 @@ def main():
     save_metrics(metrics, args.target_cols, args.results_dir)
     
     # Create visualizations only if not metrics_only
-    if not args.metrics_only:
+    if not args.metrics_only or args.create_3d_plots:
         create_per_column_visualizations(
             results_dict, 
             args.target_cols, 
             args.target_col_indices,
             args.output_window_size,
             args.results_dir,
-            create_3d_plots=getattr(args, 'create_3d_plots', False)
+            create_3d_plots=args.create_3d_plots
         )
     else:
         print("\nSkipping visualizations (--metrics-only flag enabled)")

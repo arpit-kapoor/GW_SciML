@@ -62,6 +62,8 @@ def setup_inference_arguments(description, default_base_data_dir, default_result
     # Output control
     parser.add_argument('--metrics-only', action='store_true', default=False,
                        help='Only save metrics and metadata (no arrays or plots) to save disk space')
+    parser.add_argument('--create-3d-plots', action='store_true', default=False,
+                       help='Create 3D scatter plots and videos (disabled by default to save time/storage)')
     
     # Device configuration
     parser.add_argument('--device', type=str, default='auto',

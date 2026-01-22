@@ -39,13 +39,6 @@ from src.inference.metrics import (
 )
 
 
-def add_fno_model_args(parser):
-    """Add FNO-specific model arguments (if needed)."""
-    parser.add_argument('--create-3d-plots', action='store_true', default=False,
-                       help='Create 3D scatter plots and videos (disabled by default to save time/storage)')
-    return parser
-
-
 def configure_model_parameters_from_checkpoint(checkpoint):
     """Extract model configuration from checkpoint."""
     saved_args = checkpoint['args']
@@ -128,8 +121,7 @@ def main():
     args = setup_inference_arguments(
         description='Generate predictions using trained FNOInterpolate model',
         default_base_data_dir='/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density',
-        default_results_dir='/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO_predictions',
-        add_model_specific_args=add_fno_model_args
+        default_results_dir='/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO_predictions'
     )
     
     # Create results directory
