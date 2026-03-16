@@ -276,7 +276,8 @@ def main():
             args.target_col_indices,
             args.output_window_size,
             args.results_dir,
-            create_3d_plots=getattr(args, 'create_3d_plots', False)
+            create_3d_plots=getattr(args, 'create_3d_plots', False),
+            coord_transform=coord_transform
         )
     else:
         print("\nSkipping visualizations (--metrics-only flag enabled)")

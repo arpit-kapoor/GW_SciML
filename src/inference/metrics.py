@@ -38,7 +38,7 @@ def compute_normalized_mae(predictions, observations):
     obs_std = np.std(obs_flat)
     
     # Avoid division by zero
-    nmae = mae / (obs_std + 1e-10)
+    nmae = mae / (obs_std)
     
     return nmae
 
@@ -47,7 +47,7 @@ def compute_r2_score(predictions, observations):
     """
     Compute R² score (coefficient of determination).
     
-    This function is kept for potential future use but not called by default.
+    R² = 1 - SS_res/SS_tot = 1 - Σ(y - ŷ)² / Σ(y - ȳ)²
     
     Args:
         predictions (np.ndarray): Predicted values
@@ -195,9 +195,13 @@ def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform
             # 3. Kling-Gupta Efficiency (KGE)
             kge_results = compute_kge(col_predictions_flat, col_targets_flat)
             
+            # 4. R² score (coefficient of determination)
+            r2 = compute_r2_score(col_predictions_flat, col_targets_flat)
+            
             metrics[dataset_name][col_name] = {
                 'nmae': nmae,
                 'rel_l2_error': rel_l2_error,
+                'r2': r2,
                 'kge': kge_results['kge'],
                 'kge_r': kge_results['r'],
                 'kge_alpha': kge_results['alpha'],
@@ -225,7 +229,7 @@ def save_metrics(metrics, target_cols, results_dir):
     rows = []
     
     # Metrics to extract (in desired order)
-    metric_names = ['nmae', 'rel_l2_error', 'kge', 'kge_r', 'kge_alpha', 'kge_beta']
+    metric_names = ['nmae', 'rel_l2_error', 'r2', 'kge', 'kge_r', 'kge_alpha', 'kge_beta']
     
     for metric_name in metric_names:
         for col_name in target_cols:

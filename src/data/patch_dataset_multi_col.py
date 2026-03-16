@@ -178,6 +178,39 @@ class GWPatchDatasetMultiCol(Dataset):
         seq_flat = seq.reshape(n_points, -1)
         
         return seq_flat
+    
+    def _get_spatial_order_indices(self, coords):
+        """
+        Get indices that sort points in a spatially meaningful order.
+        
+        Uses lexicographic ordering (Z -> Y -> X) to approximate mesh node ordering,
+        which is typically how FEM software like FEFLOW assigns node IDs (layer by layer,
+        then row by row within each layer).
+        
+        Args:
+            coords: Array of shape [n_points, 3] with (X, Y, Z) coordinates.
+            
+        Returns:
+            np.ndarray: Indices that would sort the points in spatial order.
+        """
+        # Normalize coordinates to avoid scale issues between dimensions
+        coords_min = coords.min(axis=0)
+        coords_max = coords.max(axis=0)
+        coords_range = coords_max - coords_min
+        # Avoid division by zero for dimensions with no variation
+        coords_range = np.where(coords_range > 0, coords_range, 1.0)
+        coords_norm = (coords - coords_min) / coords_range
+        
+        # Sort by Z (depth/layers), then Y, then X
+        # This mimics typical FEM mesh node ordering where nodes are assigned
+        # layer-by-layer (Z), then row-by-row (Y), then column-by-column (X)
+        sort_indices = np.lexsort((
+            coords_norm[:, 0],   # X (tertiary sort key)
+            coords_norm[:, 1],   # Y (secondary sort key)
+            coords_norm[:, 2]    # Z (primary sort key - layers/slices)
+        ))
+        
+        return sort_indices
 
     def load_patch_data(
         self,
@@ -197,15 +230,13 @@ class GWPatchDatasetMultiCol(Dataset):
             dataset (str): Dataset type, either 'train' or 'val'.
             target_col_indices (list of int, optional): Indices of target columns to extract and concatenate.
             resolution_ratio (float): Ratio of nodes to keep in each patch (0 < ratio <= 1.0).
-            resolution_seed (int): Random seed for reproducible subsampling.
+                Uses spatially-ordered stride-based subsampling to maintain uniform spatial coverage.
+            resolution_seed (int): Random seed (unused, kept for API compatibility).
 
         Returns:
             list: List of patch data dictionaries, each containing patch_id, core/ghost coords and obs.
         """
         patch_data = []
-        
-        # Set random seed for reproducible subsampling
-        rng = np.random.RandomState(resolution_seed)
 
         for idx, patch_dir in enumerate(sorted(os.listdir(data_path))):
             # Skip hidden files/directories
@@ -231,15 +262,26 @@ class GWPatchDatasetMultiCol(Dataset):
             # Extract patch_id from directory name
             patch_id = int(patch_dir.split('_')[-1])
             
-            # Apply resolution subsampling to core nodes (not ghost nodes)
+            # Apply resolution subsampling to core nodes using spatial stride
             n_core_points = core_coords.shape[0]
             if resolution_ratio < 1.0:
                 # Calculate number of points to keep (ensure at least 1)
                 n_subsample = max(1, int(n_core_points * resolution_ratio))
                 
-                # Generate random indices for subsampling
-                subsample_indices = rng.choice(n_core_points, size=n_subsample, replace=False)
-                subsample_indices = np.sort(subsample_indices)  # Sort for consistency
+                # Calculate stride to achieve target subsampling
+                stride = max(1, n_core_points // n_subsample)
+                
+                # Get spatially-ordered indices (sorted by Z -> Y -> X)
+                spatial_order = self._get_spatial_order_indices(core_coords)
+                
+                # Apply stride over spatially-ordered points for uniform spatial coverage
+                strided_spatial_indices = spatial_order[::stride]
+                
+                # Limit to target number of samples (stride may produce slightly more)
+                subsample_indices = strided_spatial_indices[:n_subsample]
+                
+                # Sort indices back to original order for consistent array indexing
+                subsample_indices = np.sort(subsample_indices)
                 
                 # Apply subsampling to core data only
                 core_coords = core_coords[subsample_indices]

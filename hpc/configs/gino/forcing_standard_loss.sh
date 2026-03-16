@@ -26,4 +26,6 @@ PRED_ARGS="--base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLO
 --device auto
 "
 
+RESOLUTION_RATIOS="0.167"
+
 CHECKPOINT="latest_checkpoint.pth"

@@ -308,7 +308,9 @@ def create_error_analysis_plots(predictions, targets, output_path):
 
 
 def create_3d_spatial_plots(predictions, targets, coords, output_dir,
-                           variable_name='Variable', timestep=0):
+                           variable_name='Variable', timestep=0,
+                           elev=25, azim=170, point_size=5,
+                           coord_transform=None):
     """
     Create 3D scatter plots showing spatial distribution of predictions vs observations.
     
@@ -319,6 +321,10 @@ def create_3d_spatial_plots(predictions, targets, coords, output_dir,
         output_dir (str): Directory to save plots
         variable_name (str): Name of the variable being predicted
         timestep (int): Which timestep to visualize
+        elev (float): Elevation angle for 3D view (default: 25)
+        azim (float): Azimuth angle for 3D view (default: 170)
+        point_size (float): Size of scatter points (default: 5)
+        coord_transform: Optional Normalize transform object for denormalizing coordinates
         
     Returns:
         str: Path to directory containing plots
@@ -331,64 +337,89 @@ def create_3d_spatial_plots(predictions, targets, coords, output_dir,
     
     print(f"Creating 3D spatial plots for {n_samples} samples...")
     
-    for sample_idx in tqdm(range(n_samples-1, n_samples), desc="Creating 3D plots"):
-        # Get data for this sample
-        coords_sample = coords[sample_idx]
-        pred_sample = predictions[sample_idx, :len(coords_sample), timestep]
-        target_sample = targets[sample_idx, :len(coords_sample), timestep]
-        
-        # Calculate color scale based on observations
-        vmin = np.min(target_sample)
-        vmax = np.max(target_sample)
-        
-        # Create figure with three subplots
-        fig = plt.figure(figsize=(20, 6))
-        
-        # Observations
-        ax1 = fig.add_subplot(1, 3, 1, projection='3d')
-        scatter1 = ax1.scatter(coords_sample[:, 0], coords_sample[:, 1], coords_sample[:, 2],
-                              c=target_sample, cmap='viridis', s=5, alpha=0.7,
-                              vmin=vmin, vmax=vmax)
-        ax1.set_title(f'Observations - Sample {sample_idx+1}\nTimestep {timestep+1}')
-        ax1.set_xlabel('X')
-        ax1.set_ylabel('Y')
-        ax1.set_zlabel('Z')
-        plt.colorbar(scatter1, ax=ax1, shrink=0.5, aspect=20,
-                    label=f'{variable_name} (observed)')
-        
-        # Predictions
-        ax2 = fig.add_subplot(1, 3, 2, projection='3d')
-        scatter2 = ax2.scatter(coords_sample[:, 0], coords_sample[:, 1], coords_sample[:, 2],
-                              c=pred_sample, cmap='viridis', s=5, alpha=0.7,
-                              vmin=vmin, vmax=vmax)
-        ax2.set_title(f'Predictions - Sample {sample_idx+1}\nTimestep {timestep+1}')
-        ax2.set_xlabel('X')
-        ax2.set_ylabel('Y')
-        ax2.set_zlabel('Z')
-        plt.colorbar(scatter2, ax=ax2, shrink=0.5, aspect=20,
-                    label=f'{variable_name} (predicted)')
-        
-        # Error
-        error = target_sample - pred_sample
-        error_range = max(abs(error.min()), abs(error.max()))
-        
-        ax3 = fig.add_subplot(1, 3, 3, projection='3d')
-        scatter3 = ax3.scatter(coords_sample[:, 0], coords_sample[:, 1], coords_sample[:, 2],
-                              c=error, cmap='RdBu_r', s=5, alpha=0.7,
-                              vmin=-error_range, vmax=error_range)
-        ax3.set_title(f'Error (Obs - Pred) - Sample {sample_idx+1}\nTimestep {timestep+1}')
-        ax3.set_xlabel('X')
-        ax3.set_ylabel('Y')
-        ax3.set_zlabel('Z')
-        plt.colorbar(scatter3, ax=ax3, shrink=0.5, aspect=20,
-                    label=f'{variable_name} error')
-        
-        plt.tight_layout()
-        
-        # Save plot
-        filename = f'3d_scatter_sample_{sample_idx+1:03d}.png'
-        plt.savefig(os.path.join(scatter_dir, filename), dpi=300, bbox_inches='tight')
-        plt.close()
+    with plt.style.context('bmh'):
+        for sample_idx in tqdm(range(n_samples-1, n_samples), desc="Creating 3D plots"):
+            # Get data for this sample
+            coords_sample = coords[sample_idx]
+            
+            # Denormalize coordinates if transform provided
+            if coord_transform is not None:
+                coords_sample = coord_transform.inverse_transform(coords_sample).numpy()
+            
+            pred_sample = predictions[sample_idx, :len(coords_sample), timestep]
+            target_sample = targets[sample_idx, :len(coords_sample), timestep]
+            
+            # Calculate color scale based on observations
+            vmin = np.min(target_sample)
+            vmax = np.max(target_sample)
+            
+            # Create figure with three subplots (taller for better z-axis visibility)
+            fig = plt.figure(figsize=(21, 9))
+            
+            # Helper function to format 3D axis aesthetics
+            def format_3d_axis(ax):
+                """Apply consistent formatting to 3D axis."""
+                ax.set_box_aspect((1, 1, 1.1))
+                ax.view_init(elev=elev, azim=azim)
+                # Reduce number of ticks and font size for cleaner appearance
+                ax.xaxis.set_major_locator(plt.MaxNLocator(5))
+                ax.yaxis.set_major_locator(plt.MaxNLocator(5))
+                ax.zaxis.set_major_locator(plt.MaxNLocator(5))
+                ax.tick_params(axis='both', labelsize=8)
+                ax.tick_params(axis='y', labelrotation=60)
+                # Add padding to axis labels
+                ax.xaxis.labelpad = 10
+                ax.yaxis.labelpad = 10
+                ax.zaxis.labelpad = 5
+            
+            # Observations
+            ax1 = fig.add_subplot(1, 3, 1, projection='3d')
+            scatter1 = ax1.scatter(coords_sample[:, 0], coords_sample[:, 1], coords_sample[:, 2],
+                                  c=target_sample, cmap='viridis', s=point_size, alpha=0.7,
+                                  vmin=vmin, vmax=vmax)
+            ax1.set_title(f'Observations - Sample {sample_idx+1}\nTimestep {timestep+1}')
+            ax1.set_xlabel('X')
+            ax1.set_ylabel('Y')
+            ax1.set_zlabel('Z')
+            format_3d_axis(ax1)
+            plt.colorbar(scatter1, ax=ax1, shrink=0.5, aspect=20,
+                        label=f'{variable_name} (observed)')
+            
+            # Predictions
+            ax2 = fig.add_subplot(1, 3, 2, projection='3d')
+            scatter2 = ax2.scatter(coords_sample[:, 0], coords_sample[:, 1], coords_sample[:, 2],
+                                  c=pred_sample, cmap='viridis', s=point_size, alpha=0.7,
+                                  vmin=vmin, vmax=vmax)
+            ax2.set_title(f'Predictions - Sample {sample_idx+1}\nTimestep {timestep+1}')
+            ax2.set_xlabel('X')
+            ax2.set_ylabel('Y')
+            ax2.set_zlabel('Z')
+            format_3d_axis(ax2)
+            plt.colorbar(scatter2, ax=ax2, shrink=0.5, aspect=20,
+                        label=f'{variable_name} (predicted)')
+            
+            # Error
+            error = target_sample - pred_sample
+            error_range = max(abs(error.min()), abs(error.max()))
+            
+            ax3 = fig.add_subplot(1, 3, 3, projection='3d')
+            scatter3 = ax3.scatter(coords_sample[:, 0], coords_sample[:, 1], coords_sample[:, 2],
+                                  c=error, cmap='RdBu_r', s=point_size, alpha=0.7,
+                                  vmin=-error_range, vmax=error_range)
+            ax3.set_title(f'Error (Obs - Pred) - Sample {sample_idx+1}\nTimestep {timestep+1}')
+            ax3.set_xlabel('X')
+            ax3.set_ylabel('Y')
+            ax3.set_zlabel('Z')
+            format_3d_axis(ax3)
+            plt.colorbar(scatter3, ax=ax3, shrink=0.5, aspect=20,
+                        label=f'{variable_name} error')
+            
+            plt.tight_layout()
+            
+            # Save plot
+            filename = f'3d_scatter_sample_{sample_idx+1:03d}.png'
+            plt.savefig(os.path.join(scatter_dir, filename), dpi=300, bbox_inches='tight')
+            plt.close()
     
     print(f"3D spatial plots saved to: {scatter_dir}")
     return scatter_dir
@@ -435,13 +466,14 @@ def create_video_from_images(image_dir, output_path, fps=10, pattern='3d_scatter
     print(f"Video details: {len(image_files)} frames at {fps} fps")
 
 
-def create_all_visualizations(results_dict, args):
+def create_all_visualizations(results_dict, args, coord_transform=None):
     """
     Orchestrate creation of all visualizations.
     
     Args:
         results_dict (dict): Dictionary with 'train' and 'val' results
         args (argparse.Namespace): Arguments containing configuration
+        coord_transform: Optional Normalize transform object for denormalizing coordinates in 3D plots
     """
     print("\nCreating visualizations...")
     
@@ -467,7 +499,8 @@ def create_all_visualizations(results_dict, args):
     
     # 4. 3D spatial plots
     scatter_dir = create_3d_spatial_plots(predictions, targets, coords,
-                                          args.results_dir, variable_name=variable_name)
+                                          args.results_dir, variable_name=variable_name,
+                                          coord_transform=coord_transform)
     
     # 5. Create video from 3D plots
     video_path = os.path.join(args.results_dir, '3d_scatter_plots_video.mp4')
@@ -480,7 +513,8 @@ def create_all_visualizations(results_dict, args):
 
 def create_per_column_visualizations(results_dict, target_cols, 
                                      target_col_indices, output_window_size,
-                                     results_dir, create_3d_plots=False):
+                                     results_dir, create_3d_plots=False,
+                                     coord_transform=None):
     """
     Create visualizations for each target column separately for both train and val datasets.
     
@@ -494,6 +528,7 @@ def create_per_column_visualizations(results_dict, target_cols,
         output_window_size (int): Number of output timesteps
         results_dir (str): Base directory for saving results
         create_3d_plots (bool): Whether to create 3D plots and videos
+        coord_transform: Optional Normalize transform object for denormalizing coordinates in 3D plots
     """
     print("\nCreating per-column visualizations...")
     
@@ -570,7 +605,8 @@ def create_per_column_visualizations(results_dict, target_cols,
             if create_3d_plots:
                 print(f"Creating 3D plots for {col_name} ({dataset_name})...")
                 scatter_dir = create_3d_spatial_plots(col_predictions, col_targets, coords_data,
-                                                     col_dir, variable_name=col_name)
+                                                     col_dir, variable_name=col_name,
+                                                     coord_transform=coord_transform)
                 
                 # # 5. Create video from 3D plots
                 # video_path = os.path.join(col_dir, f'{col_name}_3d_scatter_plots_video.mp4')

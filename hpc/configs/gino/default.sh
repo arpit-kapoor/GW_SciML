@@ -1,8 +1,7 @@
 #!/bin/bash
-
 TRAIN_ARGS="
 --base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density
---patch-data-subdir filter_patch 
+--patch-data-subdir filter_patch_all_ts
 --target-cols mass_concentration head 
 --epochs 400
 --batch-size 512 
@@ -13,6 +12,18 @@ TRAIN_ARGS="
 --lr-scheduler-interval 4
 --lr-gamma 0.98
 --grad-clip-norm 1.0 
---save-checkpoint-every 25
+--save-checkpoint-every 10
 --lambda-conc-focus 0.0
 "
+
+
+PRED_ARGS="--base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density
+--patch-data-subdir filter_patch_all_ts
+--batch-size 256
+--resolution-seed 286
+--device auto
+"
+
+RESOLUTION_RATIOS="1.0"
+
+CHECKPOINT="latest_checkpoint.pth"
