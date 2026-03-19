@@ -19,13 +19,12 @@ TRAIN_ARGS="
 
 
 PRED_ARGS="--base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density
---patch-data-subdir patch_all_ts
+--patch-data-subdir filter_patch_all_ts
 --batch-size 256
 --resolution-seed 286
---metrics-only
 --device auto
 "
 
-RESOLUTION_RATIOS="0.167"
+RESOLUTION_RATIOS="1.0"
 
 CHECKPOINT="latest_checkpoint.pth"
