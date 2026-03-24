@@ -105,6 +105,12 @@ def setup_training_arguments(
     parser.add_argument('--var-aware-beta', type=float, default=2.0,
                        help='Beta parameter for variance-aware loss')
     
+    # Resolution parameters for training on different spatial resolutions
+    parser.add_argument('--resolution-ratio', type=float, default=1.0,
+                       help='Ratio of nodes to keep in each patch (0 < ratio <= 1.0). Default is 1.0 (no subsampling)')
+    parser.add_argument('--resolution-seed', type=int, default=42,
+                       help='Random seed for reproducible subsampling. Default is 42')
+    
     # Other parameters
     parser.add_argument('--device', type=str, default='auto',
                        help='Device to use for training (cuda, cpu, or auto)')

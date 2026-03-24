@@ -283,12 +283,24 @@ class GWPatchDatasetMultiCol(Dataset):
                 # Sort indices back to original order for consistent array indexing
                 subsample_indices = np.sort(subsample_indices)
                 
-                # Apply subsampling to core data only
+                # Apply subsampling to core data
                 core_coords = core_coords[subsample_indices]
                 core_obs = core_obs[:, subsample_indices, :]  # [time, n_subsample, n_cols]
                 core_forcings = core_forcings[:, subsample_indices, :]  # [time, n_subsample, n_forcings]
                 
-                # Ghost nodes remain unchanged for boundary consistency
+                # Apply subsampling to ghost data using same spatial approach
+                n_ghost_points = ghost_coords.shape[0]
+                if n_ghost_points > 0:
+                    n_ghost_subsample = max(1, int(n_ghost_points * resolution_ratio))
+                    ghost_stride = max(1, n_ghost_points // n_ghost_subsample)
+                    
+                    ghost_spatial_order = self._get_spatial_order_indices(ghost_coords)
+                    ghost_strided_indices = ghost_spatial_order[::ghost_stride][:n_ghost_subsample]
+                    ghost_subsample_indices = np.sort(ghost_strided_indices)
+                    
+                    ghost_coords = ghost_coords[ghost_subsample_indices]
+                    ghost_obs = ghost_obs[:, ghost_subsample_indices, :]
+                    ghost_forcings = ghost_forcings[:, ghost_subsample_indices, :]
             else:
                 n_subsample = n_core_points
             
