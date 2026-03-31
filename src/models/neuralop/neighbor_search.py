@@ -1,6 +1,3 @@
-import torch
-from torch import nn
-
 # only import open3d if built
 open3d_built = False
 try:
@@ -8,6 +5,9 @@ try:
     open3d_built = True
 except:
     pass
+
+import torch
+from torch import nn
 
 # Uses open3d by default which, as of October 2024, requires torch 2.0 and cuda11.*
 class NeighborSearch(nn.Module):

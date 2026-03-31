@@ -5,6 +5,7 @@ def test_core_imports():
     # Attempt to import core modules heavily relied upon to ensure
     # environment consistency between macOS and Linux.
     try:
+        import open3d
         import numpy
         import pandas
         import scipy
@@ -16,12 +17,6 @@ def test_core_imports():
         import tensorly
     except ImportError as e:
         pytest.fail(f"Core module missing or failed to load: {e}")
-
-def test_open3d_import():
-    try:
-        import open3d
-    except ImportError as e:
-        pytest.fail(f"Open3D failed to load: {e}")
 
 def test_pytorch_versions():
     import torch
