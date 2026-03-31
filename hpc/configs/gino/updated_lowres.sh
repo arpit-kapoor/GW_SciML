@@ -3,7 +3,7 @@ TRAIN_ARGS="
 --base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head 
---epochs 450
+--epochs 500
 --batch-size 512 
 --input-window-size 5 
 --output-window-size 1 
@@ -25,8 +25,6 @@ PRED_ARGS="--base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLO
 --batch-size 256
 --device auto
 --resolution-seed 42
---metrics-only
---create-3d-plots
 "
 
 RESOLUTION_RATIOS="0.167"
