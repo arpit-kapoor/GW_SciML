@@ -36,7 +36,7 @@ echo "Job ID: $PBS_JOBID"
 cd $PBS_O_WORKDIR/..
 
 # Environment
-PYTHON_ENV="/srv/scratch/z5370003/miniconda3/envs/torch-env/bin/python"
+PYTHON_ENV="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/.venv/bin/python"
 RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO"
 
 # Determine config name (defaults to 'adhoc' if not specified)

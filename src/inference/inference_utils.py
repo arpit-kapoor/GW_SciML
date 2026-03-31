@@ -101,7 +101,7 @@ def load_checkpoint(checkpoint_path, device='cpu'):
         dict: Checkpoint dictionary containing model_state_dict, args, etc.
     """
     print(f"\nLoading checkpoint from: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Print checkpoint info
     if 'args' in checkpoint:
