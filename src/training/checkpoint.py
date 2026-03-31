@@ -41,7 +41,7 @@ def save_checkpoint(
             before saving state_dict. If None, uses default unwrapping.
     """
     if filename is None:
-        filename = f'checkpoint_epoch_{epoch:04d}.pth'
+        filename = 'latest_checkpoint.pth'
     
     checkpoint_path = os.path.join(args.checkpoint_dir, filename)
     
@@ -64,10 +64,11 @@ def save_checkpoint(
     torch.save(checkpoint, checkpoint_path)
     print(f"Checkpoint saved: {checkpoint_path}")
     
-    # Also save as latest checkpoint for easy resuming
-    latest_path = os.path.join(args.checkpoint_dir, 'latest_checkpoint.pth')
-    torch.save(checkpoint, latest_path)
-    print(f"Latest checkpoint saved: {latest_path}")
+    if filename != 'latest_checkpoint.pth':
+        # Also save as latest checkpoint for easy resuming
+        latest_path = os.path.join(args.checkpoint_dir, 'latest_checkpoint.pth')
+        torch.save(checkpoint, latest_path)
+        print(f"Latest checkpoint saved: {latest_path}")
     
     # Save accumulated loss history for continuous training curves
     accumulated_losses = get_accumulated_losses(loss_dict, args, checkpoint_path)
