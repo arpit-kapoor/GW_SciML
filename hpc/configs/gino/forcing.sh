@@ -22,7 +22,7 @@ PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir filter_patch_all_ts
 --batch-size 256
 --device auto
---resolution-seed 42
+--min-resolution-ratio 0.20
 --metrics-only
 --create-3d-plots
 "

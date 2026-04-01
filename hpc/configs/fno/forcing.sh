@@ -12,6 +12,7 @@ TRAIN_ARGS="
 --lambda-conc-focus 0.0
 --save-checkpoint-every 10
 --padding-mode border
+--min-resolution-ratio 0.20
 --forcings-required
 --device auto
 "
@@ -19,7 +20,7 @@ TRAIN_ARGS="
 PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --batch-size 256
---resolution-seed 286
+--min-resolution-ratio 0.20
 --metrics-only
 --device auto
 "

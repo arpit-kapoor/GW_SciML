@@ -11,4 +11,5 @@ TRAIN_ARGS="
 --output-window-size 1
 --lambda-conc-focus 0.3
 --padding-mode border
+--min-resolution-ratio 0.20
 "

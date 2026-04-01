@@ -181,6 +181,9 @@ if __name__ == "__main__":
         target_obs_cols=['mass_concentration', 'head', 'pressure']
     )
     print("Creating datasets...")
+    if args.resolution_ratio < 1.0:
+        print(f"Using resolution ratio: {args.resolution_ratio} (subsampling to {args.resolution_ratio*100:.1f}% of nodes)")
+        print(f"Using minimum resolution ratio: {args.min_resolution_ratio}")
     train_ds, val_ds = create_patch_datasets(
         dataset_class=GWPatchDatasetMultiCol,
         patch_data_dir=args.patch_data_dir,
@@ -191,6 +194,8 @@ if __name__ == "__main__":
         output_window_size=args.output_window_size,
         forcings_required=args.forcings_required,
         forcings_transform=calculate_forcings_transform(),
+        resolution_ratio=args.resolution_ratio,
+        min_resolution_ratio=args.min_resolution_ratio,
     )
     
     print(f"Dataset sizes - Train: {len(train_ds)}, Val: {len(val_ds)}")

@@ -56,8 +56,8 @@ def setup_inference_arguments(description, default_base_data_dir, default_result
     # Resolution parameters for testing at different spatial resolutions
     parser.add_argument('--resolution-ratio', type=float, default=1.0,
                        help='Ratio of nodes to keep in each patch (0 < ratio <= 1.0). Default is 1.0 (no subsampling)')
-    parser.add_argument('--resolution-seed', type=int, default=42,
-                       help='Random seed for reproducible subsampling. Default is 42')
+    parser.add_argument('--min-resolution-ratio', type=float, default=0.20,
+                       help='Minimum per-patch ratio used by dynamic subsampling (0 < min_ratio <= resolution_ratio)')
     
     # Output control
     parser.add_argument('--metrics-only', action='store_true', default=False,

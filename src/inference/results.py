@@ -153,7 +153,8 @@ def organize_and_save_results(results_dict, args):
                 'n_vars': predictions_shape[3],
                 'predictions_shape': predictions_shape,
                 'n_patches': n_patches,
-                'resolution_ratio': getattr(args, 'resolution_ratio', 1.0)
+                'resolution_ratio': getattr(args, 'resolution_ratio', 1.0),
+                'min_resolution_ratio': getattr(args, 'min_resolution_ratio', 0.20)
             }
             
             # Add per-sample metadata only if not metrics_only

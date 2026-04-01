@@ -12,4 +12,5 @@ TRAIN_ARGS="
 --lambda-conc-focus 0.0
 --save-checkpoint-every 25
 --padding-mode border
+--min-resolution-ratio 0.20
 "

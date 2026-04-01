@@ -30,7 +30,7 @@ class GWPatchDatasetMultiCol(Dataset):
         forcings_transform=None,
         forcings_required=False,
         resolution_ratio=1.0,
-        resolution_seed=42
+        min_resolution_ratio=0.20
     ):
         """
         Initialize the GWPatchDatasetMultiCol.
@@ -47,7 +47,7 @@ class GWPatchDatasetMultiCol(Dataset):
             forcings_transform (callable, optional): Transform function for forcings data.
             forcings_required (bool): Whether forcings data is required for the model.
             resolution_ratio (float): Ratio of nodes to keep in each patch (0 < ratio <= 1.0). Default is 1.0 (no subsampling).
-            resolution_seed (int): Random seed for reproducible subsampling. Default is 42.
+            min_resolution_ratio (float): Minimum per-patch sampling ratio used in dynamic subsampling.
         """
         self.data_path = data_path
         self.dataset = dataset
@@ -57,7 +57,7 @@ class GWPatchDatasetMultiCol(Dataset):
         self.forcings_transform = forcings_transform 
         self.forcings_required = forcings_required
         self.resolution_ratio = resolution_ratio
-        self.resolution_seed = resolution_seed
+        self.min_resolution_ratio = min_resolution_ratio
 
 
         # Load and process patch data
@@ -67,7 +67,7 @@ class GWPatchDatasetMultiCol(Dataset):
             dataset=dataset,
             target_col_indices=target_col_indices,
             resolution_ratio=resolution_ratio,
-            resolution_seed=resolution_seed
+            min_resolution_ratio=min_resolution_ratio
         )
         
         # Compute weights based on temporal variances across all patches
@@ -219,7 +219,7 @@ class GWPatchDatasetMultiCol(Dataset):
         dataset='train',
         target_col_indices=None,
         resolution_ratio=1.0,
-        resolution_seed=42
+        min_resolution_ratio=0.20
     ):
         """
         Load patch data from the data directory with multi-column support.
@@ -232,7 +232,7 @@ class GWPatchDatasetMultiCol(Dataset):
             target_col_indices (list of int, optional): Indices of target columns to extract and concatenate.
             resolution_ratio (float): Global ratio of nodes to keep in each patch (0 < ratio <= 1.0).
                 Subsampling rate is scaled per-patch based on its temporal variance.
-            resolution_seed (int): Random seed (unused, kept for API compatibility).
+            min_resolution_ratio (float): Minimum per-patch sampling ratio after dynamic scaling.
 
         Returns:
             list: List of patch data dictionaries, each containing patch_id, core/ghost coords and obs.
@@ -269,23 +269,24 @@ class GWPatchDatasetMultiCol(Dataset):
             base_var = 0.2 * np.mean(patch_vars) if np.mean(patch_vars) > 0 else 1.0
             weights = patch_vars + base_var
             
-            # Find the weighting factor relative to the maximum weight to cap at resolution_ratio
-            max_weight = np.max(weights)
+            # Find the weighting factor relative to the mean weight
+            ref_weight = np.mean(weights)
             
             for i, patch_dir in enumerate(patch_dirs):
 
-                weight_factor = weights[i] / (max_weight + 1e-8)
+                weight_factor = weights[i] / (ref_weight + 1e-8)
                 
                 # Scale the global resolution_ratio by this patch's relative variability
                 adjusted_ratio = resolution_ratio * weight_factor
                 
-                # Cap the ratio so we don't try to sample > resolution_ratio or drop below 1%
-                patch_ratios[patch_dir] = min(resolution_ratio, max(0.10, adjusted_ratio))
-            
+                # Cap the ratio so we don't exceed resolution_ratio and keep a configurable floor.
+                patch_ratios[patch_dir] = min(resolution_ratio, max(min_resolution_ratio, adjusted_ratio))
 
-            print(f"Weighting factor range across patches: {weights}")    
+                print(f"Patch: {patch_dir}, Variability: {patch_vars[i]:.6f}, Weight Factor: {weight_factor:.6f}, Adjusted Ratio: {patch_ratios[patch_dir]:.4f}")
+
+ 
             print(f"Dynamic patch ratios computed. Range: [{min(patch_ratios.values()):.4f} - {max(patch_ratios.values()):.4f}]")
-            print(f"Patch ratios: {np.array(list(patch_ratios.values()))}")
+
         else:
             patch_ratios = {d: 1.0 for d in patch_dirs}
 

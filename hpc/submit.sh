@@ -25,6 +25,7 @@ show_usage() {
     echo "  ./submit.sh gino default --resume           # Resume GINO training from latest checkpoint"
     echo "  ./submit.sh fno default --predict           # Generate FNO predictions using latest model"
     echo "  ./submit.sh gino default --epochs 100       # Override specific args"
+    echo "  ./submit.sh gino default --min-resolution-ratio 0.10  # Set floor for dynamic subsampling"
     echo "  ./submit.sh fno adhoc --epochs 50 ...       # Custom FNO arguments"
     echo ""
     echo "Available GINO configs:"

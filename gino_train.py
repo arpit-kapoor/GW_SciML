@@ -176,7 +176,7 @@ if __name__ == "__main__":
     print("Creating datasets...")
     if args.resolution_ratio < 1.0:
         print(f"Using resolution ratio: {args.resolution_ratio} (subsampling to {args.resolution_ratio*100:.1f}% of nodes)")
-        print(f"Using resolution seed: {args.resolution_seed}")
+        print(f"Using minimum resolution ratio: {args.min_resolution_ratio}")
     train_ds, val_ds = create_patch_datasets(
         dataset_class=GWPatchDatasetMultiCol,
         patch_data_dir=args.patch_data_dir,
@@ -188,7 +188,7 @@ if __name__ == "__main__":
         forcings_transform=calculate_forcings_transform(),
         forcings_required=args.forcings_required,
         resolution_ratio=args.resolution_ratio,
-        resolution_seed=args.resolution_seed,
+        min_resolution_ratio=args.min_resolution_ratio,
     )
     
     print(f"Dataset sizes - Train: {len(train_ds)}, Val: {len(val_ds)}")
