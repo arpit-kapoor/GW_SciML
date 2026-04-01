@@ -7,7 +7,7 @@
 #PBS -m abe
 
 # Redirect output to log file
-LOG_DIR="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs"
+LOG_DIR="${LOG_DIR:-/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs}"
 CONFIG_NAME="${CONFIG:-default}"
 LOG_FILE="${LOG_DIR}/gino_${CONFIG_NAME}_predict_${PBS_JOBID}.log"
 exec > "$LOG_FILE" 2>&1
@@ -22,9 +22,10 @@ echo "Job ID: $PBS_JOBID"
 cd $PBS_O_WORKDIR/..
 
 # Environment
-PYTHON_ENV="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/.venv/bin/python"
-PREDICTIONS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions"
-RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO"
+PYTHON_ENV="${PYTHON_ENV:-/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/.venv/bin/python}"
+export BASE_DATA_DIR="${BASE_DATA_DIR:-/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density}"
+PREDICTIONS_BASE_DIR="${PREDICTIONS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions}"
+RESULTS_BASE_DIR="${RESULTS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO}"
 
 # Get config name from environment (required)
 CONFIG_NAME="${CONFIG:-default}"

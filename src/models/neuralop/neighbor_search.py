@@ -1,10 +1,12 @@
+import sys
 # only import open3d if built
 open3d_built = False
-try:
-    from open3d.ml.torch.layers import FixedRadiusSearch
-    open3d_built = True
-except:
-    pass
+if sys.platform != 'darwin':
+    try:
+        from open3d.ml.torch.layers import FixedRadiusSearch
+        open3d_built = True
+    except:
+        pass
 
 import torch
 from torch import nn

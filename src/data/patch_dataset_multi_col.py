@@ -223,14 +223,15 @@ class GWPatchDatasetMultiCol(Dataset):
     ):
         """
         Load patch data from the data directory with multi-column support.
+        Dynamically adjusts subsampling resolution per-patch based on temporal variability.
 
         Args:
             data_path (str): Path to the data directory.
             val_ratio (float): Validation ratio.
             dataset (str): Dataset type, either 'train' or 'val'.
             target_col_indices (list of int, optional): Indices of target columns to extract and concatenate.
-            resolution_ratio (float): Ratio of nodes to keep in each patch (0 < ratio <= 1.0).
-                Uses spatially-ordered stride-based subsampling to maintain uniform spatial coverage.
+            resolution_ratio (float): Global ratio of nodes to keep in each patch (0 < ratio <= 1.0).
+                Subsampling rate is scaled per-patch based on its temporal variance.
             resolution_seed (int): Random seed (unused, kept for API compatibility).
 
         Returns:
@@ -238,11 +239,60 @@ class GWPatchDatasetMultiCol(Dataset):
         """
         patch_data = []
 
-        for idx, patch_dir in enumerate(sorted(os.listdir(data_path))):
-            # Skip hidden files/directories
-            if patch_dir.startswith('.'):
-                continue
+        # Get list of valid patch directories
+        patch_dirs = [d for d in sorted(os.listdir(data_path)) if not d.startswith('.')]
 
+        # =========================================================================
+        # 1. Pre-calculate dynamic resolution ratios per patch based on variability
+        # =========================================================================
+        patch_ratios = {}
+        if resolution_ratio < 1.0:
+            print("Pre-calculating patch variability to adjust sampling rates...")
+            patch_vars = []
+            
+            for patch_dir in patch_dirs:
+                patch_dir_path = os.path.join(data_path, patch_dir)
+                # Use mmap to read efficiently without loading whole files into memory
+                core_obs_mmap = np.load(os.path.join(patch_dir_path, 'core_obs.npy'), mmap_mode='r')
+                
+                train_idx = int(len(core_obs_mmap) * (1 - val_ratio))
+                
+                # Compute temporal variance per node, then average to get the patch's total variability
+                # (Assumes index 0 represents mass concentration, matching existing logic)
+                temporal_variances = np.var(core_obs_mmap[:train_idx, :, 0], axis=0)
+                patch_vars.append(np.mean(temporal_variances))
+                
+            patch_vars = np.array(patch_vars)
+            
+            # Add a baseline variance (e.g., 20% of the mean) to ensure steady-state regions 
+            # aren't completely removed and still get some spatial representation.
+            base_var = 0.2 * np.mean(patch_vars) if np.mean(patch_vars) > 0 else 1.0
+            weights = patch_vars + base_var
+            
+            # Find the weighting factor relative to the maximum weight to cap at resolution_ratio
+            max_weight = np.max(weights)
+            
+            for i, patch_dir in enumerate(patch_dirs):
+
+                weight_factor = weights[i] / (max_weight + 1e-8)
+                
+                # Scale the global resolution_ratio by this patch's relative variability
+                adjusted_ratio = resolution_ratio * weight_factor
+                
+                # Cap the ratio so we don't try to sample > resolution_ratio or drop below 1%
+                patch_ratios[patch_dir] = min(resolution_ratio, max(0.10, adjusted_ratio))
+            
+
+            print(f"Weighting factor range across patches: {weights}")    
+            print(f"Dynamic patch ratios computed. Range: [{min(patch_ratios.values()):.4f} - {max(patch_ratios.values()):.4f}]")
+            print(f"Patch ratios: {np.array(list(patch_ratios.values()))}")
+        else:
+            patch_ratios = {d: 1.0 for d in patch_dirs}
+
+        # =========================================================================
+        # 2. Main data loading loop
+        # =========================================================================
+        for idx, patch_dir in enumerate(patch_dirs):
             # Patch data path
             patch_dir_path = os.path.join(data_path, patch_dir)
 
@@ -262,11 +312,13 @@ class GWPatchDatasetMultiCol(Dataset):
             # Extract patch_id from directory name
             patch_id = int(patch_dir.split('_')[-1])
             
-            # Apply resolution subsampling to core nodes using spatial stride
+            # Apply resolution subsampling using the DYNAMIC patch ratio
             n_core_points = core_coords.shape[0]
-            if resolution_ratio < 1.0:
+            current_ratio = patch_ratios[patch_dir]
+            
+            if current_ratio < 1.0:
                 # Calculate number of points to keep (ensure at least 1)
-                n_subsample = max(1, int(n_core_points * resolution_ratio))
+                n_subsample = max(1, int(n_core_points * current_ratio))
                 
                 # Calculate stride to achieve target subsampling
                 stride = max(1, n_core_points // n_subsample)
@@ -291,7 +343,7 @@ class GWPatchDatasetMultiCol(Dataset):
                 # Apply subsampling to ghost data using same spatial approach
                 n_ghost_points = ghost_coords.shape[0]
                 if n_ghost_points > 0:
-                    n_ghost_subsample = max(1, int(n_ghost_points * resolution_ratio))
+                    n_ghost_subsample = max(1, int(n_ghost_points * current_ratio))
                     ghost_stride = max(1, n_ghost_points // n_ghost_subsample)
                     
                     ghost_spatial_order = self._get_spatial_order_indices(ghost_coords)

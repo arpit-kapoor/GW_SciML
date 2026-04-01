@@ -1,7 +1,7 @@
 #!/bin/bash
 
 TRAIN_ARGS="
---base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density
+--base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir filter_patch 
 --target-cols mass_concentration head 
 --epochs 400

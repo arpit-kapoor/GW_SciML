@@ -7,7 +7,7 @@
 #PBS -m abe
 
 # Redirect output to log file
-LOG_DIR="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs"
+LOG_DIR="${LOG_DIR:-/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs}"
 CONFIG_NAME="${CONFIG:-adhoc}"
 LOG_FILE="${LOG_DIR}/fno_${CONFIG_NAME}_train_${PBS_JOBID}.log"
 exec > "$LOG_FILE" 2>&1
@@ -37,8 +37,9 @@ echo "Job ID: $PBS_JOBID"
 cd $PBS_O_WORKDIR/..
 
 # Environment
-PYTHON_ENV="/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/.venv/bin/python"
-RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO"
+PYTHON_ENV="${PYTHON_ENV:-/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/.venv/bin/python}"
+export BASE_DATA_DIR="${BASE_DATA_DIR:-/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density}"
+RESULTS_BASE_DIR="${RESULTS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO}"
 
 # Determine config name (defaults to 'adhoc' if not specified)
 CONFIG_NAME="${CONFIG:-adhoc}"

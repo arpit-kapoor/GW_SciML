@@ -65,6 +65,7 @@ if [ $# -eq 0 ]; then
 fi
 
 MODEL_TYPE="$1"
+MODEL_TYPE_UPPER=$(echo "$MODEL_TYPE" | tr "[:lower:]" "[:upper:]")
 shift
 
 # Validate model type
@@ -114,6 +115,28 @@ elif [ "$1" == "--predict" ]; then
     shift  # Remove --predict argument
 fi
 
+RUN_LOCAL=0
+REMAINING_ARGS=()
+for arg in "$@"; do
+    if [ "$arg" == "--local" ]; then
+        RUN_LOCAL=1
+    else
+        REMAINING_ARGS+=("$arg")
+    fi
+done
+set -- "${REMAINING_ARGS[@]}"
+
+if [ "$RUN_LOCAL" -eq 1 ]; then
+    export PYTHON_ENV="$(pwd)/.venv/bin/python"
+    export BASE_DATA_DIR="${BASE_DATA_DIR:-/Users/akap5486/Projects/groundwater/data/feflow_data}"
+    export LOG_DIR="$(pwd)/logs"
+    export RESULTS_BASE_DIR="$(pwd)/results/${MODEL_TYPE_UPPER}"
+    export PREDICTIONS_BASE_DIR="$(pwd)/results/${MODEL_TYPE_UPPER}_predictions"
+    mkdir -p "$LOG_DIR" "$RESULTS_BASE_DIR" "$PREDICTIONS_BASE_DIR"
+fi
+
+
+
 # Check if config exists (unless it's adhoc)
 if [ "$CONFIG_NAME" != "adhoc" ]; then
     CONFIG_FILE="$CONFIG_DIR/${CONFIG_NAME}.sh"
@@ -132,18 +155,33 @@ if [ "$MODE" == "predict" ]; then
     ADDITIONAL_ARGS="$*"
     
     if [ -n "$ADDITIONAL_ARGS" ]; then
-        echo "Submitting ${MODEL_TYPE^^} prediction job with config '$CONFIG_NAME'"
+        echo "Submitting ${MODEL_TYPE_UPPER} prediction job with config '$CONFIG_NAME'"
         [ -n "$*" ] && echo "  Additional args: $*"
         # Base64 encode the arguments to avoid PBS quoting issues
-        ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0)
-        qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$PREDICT_PBS_SCRIPT"
+        ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0 2>/dev/null || echo "$ADDITIONAL_ARGS" | base64) # fallback for macOS
+        if [ "$RUN_LOCAL" -eq 1 ]; then
+            export CONFIG="${CONFIG_NAME}"
+            export ARGS_B64="${ARGS_B64}"
+            export PBS_O_WORKDIR="${SCRIPT_DIR}"
+            export PBS_JOBID="local_$$"
+            bash "$PREDICT_PBS_SCRIPT"
+        else
+            qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$PREDICT_PBS_SCRIPT"
+        fi
     else
-        echo "Submitting ${MODEL_TYPE^^} prediction job with config: $CONFIG_NAME"
-        qsub -v "CONFIG=${CONFIG_NAME}" "$PREDICT_PBS_SCRIPT"
+        echo "Submitting ${MODEL_TYPE_UPPER} prediction job with config: $CONFIG_NAME"
+        if [ "$RUN_LOCAL" -eq 1 ]; then
+            export CONFIG="${CONFIG_NAME}"
+            export PBS_O_WORKDIR="${SCRIPT_DIR}"
+            export PBS_JOBID="local_$$"
+            bash "$PREDICT_PBS_SCRIPT"
+        else
+            qsub -v "CONFIG=${CONFIG_NAME}" "$PREDICT_PBS_SCRIPT"
+        fi
     fi
     
     echo ""
-    echo "Predictions will be saved to: ${PREDICTIONS_BASE_DIR/${PREDICTIONS_BASE_DIR%/*}\//}/${CONFIG_NAME}/"
+    echo "Predictions will be saved to: $(basename "$PREDICTIONS_BASE_DIR")/${CONFIG_NAME}/"
     
 elif [ "$MODE" == "resume" ]; then
     # Resume mode - find latest checkpoint
@@ -164,7 +202,7 @@ elif [ "$MODE" == "resume" ]; then
     fi
     
     echo "========================================="
-    echo "Resuming ${MODEL_TYPE^^} training from checkpoint:"
+    echo "Resuming ${MODEL_TYPE_UPPER} training from checkpoint:"
     echo "$CHECKPOINT"
     echo "========================================="
     echo ""
@@ -172,34 +210,57 @@ elif [ "$MODE" == "resume" ]; then
     # Add resume argument
     ADDITIONAL_ARGS="--resume-from $CHECKPOINT $*"
     
-    echo "Submitting ${MODEL_TYPE^^} job with config '$CONFIG_NAME'"
+    echo "Submitting ${MODEL_TYPE_UPPER} job with config '$CONFIG_NAME'"
     echo "  Mode: Resume training"
     [ -n "$*" ] && echo "  Additional args: $*"
     
     # Base64 encode the arguments to avoid PBS quoting issues
-    ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0)
-    qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$TRAIN_PBS_SCRIPT"
+    ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0 2>/dev/null || echo "$ADDITIONAL_ARGS" | base64)
+    if [ "$RUN_LOCAL" -eq 1 ]; then
+        export CONFIG="${CONFIG_NAME}"
+        export ARGS_B64="${ARGS_B64}"
+        export PBS_O_WORKDIR="${SCRIPT_DIR}"
+        export PBS_JOBID="local_$$"
+        bash "$TRAIN_PBS_SCRIPT"
+    else
+        qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$TRAIN_PBS_SCRIPT"
+    fi
     
     echo ""
-    echo "Results will be saved to: ${RESULTS_BASE_DIR/${RESULTS_BASE_DIR%/*}\//}/${CONFIG_NAME}/"
+    echo "Results will be saved to: $(basename "$RESULTS_BASE_DIR")/${CONFIG_NAME}/"
     
 else
     # Train mode
     ADDITIONAL_ARGS="$*"
     
     if [ -n "$ADDITIONAL_ARGS" ]; then
-        echo "Submitting ${MODEL_TYPE^^} training job with config '$CONFIG_NAME'"
+        echo "Submitting ${MODEL_TYPE_UPPER} training job with config '$CONFIG_NAME'"
         [ -n "$*" ] && echo "  Additional args: $*"
         # Base64 encode the arguments to avoid PBS quoting issues
-        ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0)
-        qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$TRAIN_PBS_SCRIPT"
+        ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0 2>/dev/null || echo "$ADDITIONAL_ARGS" | base64)
+        if [ "$RUN_LOCAL" -eq 1 ]; then
+            export CONFIG="${CONFIG_NAME}"
+            export ARGS_B64="${ARGS_B64}"
+            export PBS_O_WORKDIR="${SCRIPT_DIR}"
+            export PBS_JOBID="local_$$"
+            bash "$TRAIN_PBS_SCRIPT"
+        else
+            qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$TRAIN_PBS_SCRIPT"
+        fi
     else
-        echo "Submitting ${MODEL_TYPE^^} training job with config: $CONFIG_NAME"
-        qsub -v "CONFIG=${CONFIG_NAME}" "$TRAIN_PBS_SCRIPT"
+        echo "Submitting ${MODEL_TYPE_UPPER} training job with config: $CONFIG_NAME"
+        if [ "$RUN_LOCAL" -eq 1 ]; then
+            export CONFIG="${CONFIG_NAME}"
+            export PBS_O_WORKDIR="${SCRIPT_DIR}"
+            export PBS_JOBID="local_$$"
+            bash "$TRAIN_PBS_SCRIPT"
+        else
+            qsub -v "CONFIG=${CONFIG_NAME}" "$TRAIN_PBS_SCRIPT"
+        fi
     fi
     
     echo ""
-    echo "Results will be saved to: ${RESULTS_BASE_DIR/${RESULTS_BASE_DIR%/*}\//}/${CONFIG_NAME}/"
+    echo "Results will be saved to: $(basename "$RESULTS_BASE_DIR")/${CONFIG_NAME}/"
 fi
 
 echo ""

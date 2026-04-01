@@ -1,6 +1,6 @@
 #!/bin/bash
 TRAIN_ARGS="
---base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density
+--base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head 
 --epochs 500
@@ -20,7 +20,7 @@ TRAIN_ARGS="
 --device auto
 "
 
-PRED_ARGS="--base-data-dir /srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density
+PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --batch-size 256
 --device auto
