@@ -238,6 +238,7 @@ class GWPatchDatasetMultiCol(Dataset):
             list: List of patch data dictionaries, each containing patch_id, core/ghost coords and obs.
         """
         patch_data = []
+        ratio_eps = 1e-12
 
         # Get list of valid patch directories
         patch_dirs = [d for d in sorted(os.listdir(data_path)) if not d.startswith('.')]
@@ -246,7 +247,7 @@ class GWPatchDatasetMultiCol(Dataset):
         # 1. Pre-calculate dynamic resolution ratios per patch based on variability
         # =========================================================================
         patch_ratios = {}
-        if resolution_ratio < 1.0:
+        if resolution_ratio < (1.0 - ratio_eps):
             print("Pre-calculating patch variability to adjust sampling rates...")
             patch_vars = []
             
@@ -315,9 +316,11 @@ class GWPatchDatasetMultiCol(Dataset):
             
             # Apply resolution subsampling using the DYNAMIC patch ratio
             n_core_points = core_coords.shape[0]
+            n_ghost_points = ghost_coords.shape[0]
             current_ratio = patch_ratios[patch_dir]
             
-            if current_ratio < 1.0:
+            # Guard against floating-point jitter: 1.0 (or effectively 1.0) means no subsampling.
+            if current_ratio < (1.0 - ratio_eps):
                 # Calculate number of points to keep (ensure at least 1)
                 n_subsample = max(1, int(n_core_points * current_ratio))
                 
@@ -342,7 +345,6 @@ class GWPatchDatasetMultiCol(Dataset):
                 core_forcings = core_forcings[:, subsample_indices, :]  # [time, n_subsample, n_forcings]
                 
                 # Apply subsampling to ghost data using same spatial approach
-                n_ghost_points = ghost_coords.shape[0]
                 if n_ghost_points > 0:
                     n_ghost_subsample = max(1, int(n_ghost_points * current_ratio))
                     ghost_stride = max(1, n_ghost_points // n_ghost_subsample)
@@ -354,8 +356,22 @@ class GWPatchDatasetMultiCol(Dataset):
                     ghost_coords = ghost_coords[ghost_subsample_indices]
                     ghost_obs = ghost_obs[:, ghost_subsample_indices, :]
                     ghost_forcings = ghost_forcings[:, ghost_subsample_indices, :]
+                else:
+                    n_ghost_subsample = 0
+
+                print(
+                    f"Patch {patch_id}: subsampling applied "
+                    f"(ratio={current_ratio:.4f}). "
+                    f"Core nodes {n_core_points} -> {core_coords.shape[0]}, "
+                    f"Ghost nodes {n_ghost_points} -> {ghost_coords.shape[0]}"
+                )
             else:
                 n_subsample = n_core_points
+                print(
+                    f"Patch {patch_id}: no subsampling "
+                    f"(ratio={current_ratio:.4f}). "
+                    f"Core nodes={core_coords.shape[0]}, Ghost nodes={ghost_coords.shape[0]}"
+                )
             
             # Compute temporal variances for mass concentration (before any transforms)
             # Use training data only for variance computation

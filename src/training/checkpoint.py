@@ -117,7 +117,7 @@ def load_checkpoint(
     print(f"Loading checkpoint from: {checkpoint_path}")
     
     # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=args.device)
+    checkpoint = torch.load(checkpoint_path, map_location=args.device, weights_only=False)
     
     # Validate compatibility if requested
     if validate_compatibility:
