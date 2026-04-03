@@ -45,6 +45,37 @@ Dependencies are managed via `uv` and declared in `pyproject.toml`.
 - ~50GB disk space for data and results
 - PBS/Torque job scheduler for HPC cluster submissions (optional)
 
+## Dataset Preparation (Required Before Training)
+
+Before running training or prediction, generate patch metadata and patch arrays.
+
+`create_patched_dataset.py` builds both:
+- `patches.json`
+- per-patch arrays in `patch_all_ts/patch_###/`
+
+```bash
+# From repository root
+python create_patched_dataset.py \
+    --base-data-dir /path/to/data \
+    --raw-data-subdir all \
+    --forcings-data-subdir forcings_corrected_all \
+    --patch-data-subdir patch_all_ts \
+    --n-patches 20 \
+    --slice-split 4 \
+    --ghost-points-ratio 0.05
+```
+
+HPC example:
+
+```bash
+python create_patched_dataset.py \
+    --base-data-dir /srv/scratch/<zid>/projects/data/groundwater/FEFLOW/coastal/variable_density \
+    --patch-data-subdir patch_all_ts \
+    --max-workers 12
+```
+
+Important: use the same `--patch-data-subdir` value for dataset creation, training, and inference.
+
 ## Quick Start
 
 ### Option 1: Submit PBS Jobs (HPC Cluster)
@@ -84,7 +115,7 @@ For local development or interactive sessions:
 # Train GINO model
 python gino_train.py \
     --base-data-dir /path/to/data \
-    --patch-data-subdir filter_patch_all_ts \
+    --patch-data-subdir patch_all_ts \
     --epochs 300 \
     --batch-size 512 \
     --learning-rate 8e-4 \
@@ -95,7 +126,7 @@ python gino_train.py \
 # Train FNO model
 python fno_train.py \
     --base-data-dir /path/to/data \
-    --patch-data-subdir filter_patch_all_ts \
+    --patch-data-subdir patch_all_ts \
     --epochs 250 \
     --batch-size 256 \
     --learning-rate 5e-4 \
@@ -112,7 +143,7 @@ python gino_train.py --resume-from /path/to/checkpoint.pth
 python gino_predict.py \
     --model-path /path/to/model.pth \
     --base-data-dir /path/to/data \
-    --patch-data-subdir filter_patch_all_ts \
+    --patch-data-subdir patch_all_ts \
     --batch-size 256
 
 # Generate FNO predictions (full resolution)
