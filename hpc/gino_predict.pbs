@@ -1,14 +1,61 @@
 #!/bin/bash
 #PBS -N GINO_Predict
-#PBS -l select=1:ncpus=8:mem=64gb:ngpus=1:gpu_model=A100
+#PBS -P yl75
+#PBS -q dgxa100
+#PBS -l ncpus=16
+#PBS -l ngpus=1
+#PBS -l mem=256GB
+#PBS -l jobfs=100GB
+#PBS -l storage=scratch/yl75
 #PBS -l walltime=2:00:00
 #PBS -o /dev/null
 #PBS -e /dev/null
 #PBS -m abe
 
-# Redirect output to log file
-LOG_DIR="${LOG_DIR:-/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/logs}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HPC_DIR="${PBS_O_WORKDIR:-$SCRIPT_DIR}"
 CONFIG_NAME="${CONFIG:-default}"
+PATHS_FILE="${PATHS_FILE:-$HPC_DIR/configs/paths.sh}"
+
+if [ ! -f "$PATHS_FILE" ]; then
+    echo "Error: Paths config file not found: $PATHS_FILE"
+    exit 1
+fi
+source "$PATHS_FILE"
+
+if [ "$CONFIG_NAME" != "adhoc" ]; then
+    CONFIG_FILE="${CONFIG_FILE:-$HPC_DIR/configs/gino/${CONFIG_NAME}.sh}"
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+    else
+        echo "Error: Config file $CONFIG_FILE not found"
+        exit 1
+    fi
+fi
+
+PYTHON_ENV="${PYTHON_ENV:-}"
+export BASE_DATA_DIR="${BASE_DATA_DIR:-}"
+LOG_DIR="${LOG_DIR:-}"
+RESULTS_BASE_DIR="${RESULTS_BASE_DIR:-}"
+PREDICTIONS_BASE_DIR="${PREDICTIONS_BASE_DIR:-}"
+
+REQUIRED_VARS=(PYTHON_ENV BASE_DATA_DIR LOG_DIR RESULTS_BASE_DIR PREDICTIONS_BASE_DIR)
+MISSING_VARS=()
+for required_var in "${REQUIRED_VARS[@]}"; do
+    if [ -z "${!required_var:-}" ]; then
+        MISSING_VARS+=("$required_var")
+    fi
+done
+
+if [ ${#MISSING_VARS[@]} -gt 0 ]; then
+    echo "Error: Missing required path/env vars: ${MISSING_VARS[*]}"
+    echo "Hint: define them in $PATHS_FILE or pass them via environment."
+    exit 1
+fi
+
+mkdir -p "$LOG_DIR"
+
+# Redirect output to log file
 LOG_FILE="${LOG_DIR}/gino_${CONFIG_NAME}_predict_${PBS_JOBID}.log"
 exec > "$LOG_FILE" 2>&1
 echo "Job started on $(hostname) at $(date)"
@@ -19,32 +66,14 @@ echo "Job ID: $PBS_JOBID"
 # Usage: Called via submit_gino.sh with --predict flag
 #   ./submit_gino.sh [config_name] --predict [additional_args]
 
-cd $PBS_O_WORKDIR/..
-
-# Environment
-PYTHON_ENV="${PYTHON_ENV:-/srv/scratch/z5370003/projects/src/04_groundwater/variable_density/.venv/bin/python}"
-export BASE_DATA_DIR="${BASE_DATA_DIR:-/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density}"
-PREDICTIONS_BASE_DIR="${PREDICTIONS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions}"
-RESULTS_BASE_DIR="${RESULTS_BASE_DIR:-/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO}"
+cd "$HPC_DIR/.."
 
 # Get config name from environment (required)
 CONFIG_NAME="${CONFIG:-default}"
 
 
-# Load config if specified, otherwise use command line args
-if [ "$CONFIG_NAME" != "adhoc" ]; then
-    CONFIG_FILE="hpc/configs/gino/${CONFIG_NAME}.sh"
-    if [ -f "$CONFIG_FILE" ]; then
-        echo "Loading configuration from: $CONFIG_FILE"
-        source "$CONFIG_FILE"
-        echo "Configuration loaded successfully"
-    else
-        echo "Error: Config file $CONFIG_FILE not found"
-        echo "Available configs:"
-        ls -1 hpc/configs/gino/*.sh 2>/dev/null | xargs -n 1 basename | sed 's/.sh$//' | sed 's/^/  - /' || echo "  (none found)"
-        exit 1
-    fi
-else
+# Load args for ad-hoc mode only (config mode was already sourced above)
+if [ "$CONFIG_NAME" == "adhoc" ]; then
     echo "Using ad-hoc configuration (no config file)"
     # Decode ARGS if provided as base64
     if [ -n "${ARGS_B64:-}" ]; then
@@ -52,6 +81,8 @@ else
     else
         PRED_ARGS="${ARGS:-}"
     fi
+else
+    echo "Loaded configuration from: hpc/configs/gino/${CONFIG_NAME}.sh"
 fi
 
 # Get model path and prediction args from environment

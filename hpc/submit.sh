@@ -10,6 +10,48 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+resolve_with_default() {
+    local var_name="$1"
+    local default_value="$2"
+    local current_value="${!var_name:-}"
+    if [ -z "$current_value" ] && [ -n "$default_value" ]; then
+        export "$var_name=$default_value"
+    fi
+}
+
+require_set() {
+    local var_name="$1"
+    if [ -z "${!var_name:-}" ]; then
+        echo "Error: Required variable '$var_name' is not set"
+        exit 1
+    fi
+}
+
+submit_job() {
+    local script_path="$1"
+    local args_b64="${2:-}"
+
+    if [ "$USE_QSUB" == "1" ]; then
+        local qsub_vars="$QSUB_EXPORTS"
+        if [ -n "$args_b64" ]; then
+            qsub_vars="${qsub_vars},ARGS_B64=${args_b64}"
+        fi
+        qsub -v "$qsub_vars" "$script_path"
+    else
+        export CONFIG="${CONFIG_NAME}"
+        export PATHS_FILE
+        export PYTHON_ENV BASE_DATA_DIR LOG_DIR RESULTS_BASE_DIR PREDICTIONS_BASE_DIR
+        export PBS_O_WORKDIR="$SCRIPT_DIR"
+        export PBS_JOBID="local_$$"
+        if [ -n "$args_b64" ]; then
+            export ARGS_B64="$args_b64"
+        else
+            unset ARGS_B64
+        fi
+        bash "$script_path"
+    fi
+}
+
 show_usage() {
     echo "=========================================="
     echo "Neural Operator Job Submission"
@@ -89,16 +131,12 @@ if [ "$MODEL_TYPE" == "gino" ]; then
     TRAIN_PBS_SCRIPT="$SCRIPT_DIR/gino_train.pbs"
     PREDICT_PBS_SCRIPT="$SCRIPT_DIR/gino_predict.pbs"
     CONFIG_DIR="$SCRIPT_DIR/configs/gino"
-    RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO"
-    PREDICTIONS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/GINO_predictions"
     TRAIN_LOG_PATTERN="train_gino_*.log"
     PREDICT_LOG_PATTERN="predict_gino_*.log"
 else  # fno
     TRAIN_PBS_SCRIPT="$SCRIPT_DIR/fno_train.pbs"
     PREDICT_PBS_SCRIPT="$SCRIPT_DIR/fno_predict.pbs"
     CONFIG_DIR="$SCRIPT_DIR/configs/fno"
-    RESULTS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO"
-    PREDICTIONS_BASE_DIR="/srv/scratch/z5370003/projects/results/04_groundwater/variable_density/FNO_predictions"
     TRAIN_LOG_PATTERN="train_fno_interpolate_*.log"
     PREDICT_LOG_PATTERN="predict_fno_*.log"
 fi
@@ -116,26 +154,6 @@ elif [ "$1" == "--predict" ]; then
     shift  # Remove --predict argument
 fi
 
-RUN_LOCAL=0
-REMAINING_ARGS=()
-for arg in "$@"; do
-    if [ "$arg" == "--local" ]; then
-        RUN_LOCAL=1
-    else
-        REMAINING_ARGS+=("$arg")
-    fi
-done
-set -- "${REMAINING_ARGS[@]}"
-
-if [ "$RUN_LOCAL" -eq 1 ]; then
-    export PYTHON_ENV="$(pwd)/.venv/bin/python"
-    export BASE_DATA_DIR="${BASE_DATA_DIR:-/Users/akap5486/Projects/groundwater/data/feflow_data}"
-    export LOG_DIR="$(pwd)/logs"
-    export RESULTS_BASE_DIR="$(pwd)/results/${MODEL_TYPE_UPPER}"
-    export PREDICTIONS_BASE_DIR="$(pwd)/results/${MODEL_TYPE_UPPER}_predictions"
-    mkdir -p "$LOG_DIR" "$RESULTS_BASE_DIR" "$PREDICTIONS_BASE_DIR"
-fi
-
 
 
 # Check if config exists (unless it's adhoc)
@@ -150,6 +168,55 @@ if [ "$CONFIG_NAME" != "adhoc" ]; then
     fi
 fi
 
+PATHS_FILE="${PATHS_FILE:-$SCRIPT_DIR/configs/paths.sh}"
+if [ ! -f "$PATHS_FILE" ]; then
+    echo "Error: Paths config file not found: $PATHS_FILE"
+    exit 1
+fi
+source "$PATHS_FILE"
+
+USE_QSUB="${USE_QSUB:-1}"
+if [ "$USE_QSUB" != "0" ] && [ "$USE_QSUB" != "1" ]; then
+    echo "Error: USE_QSUB must be 0 or 1 in $PATHS_FILE"
+    exit 1
+fi
+if [ "$USE_QSUB" == "1" ] && ! command -v qsub >/dev/null 2>&1; then
+    echo "Error: USE_QSUB=1 but qsub command not found"
+    exit 1
+fi
+
+if [ "$MODEL_TYPE" == "gino" ]; then
+    resolve_with_default RESULTS_BASE_DIR "${RESULTS_BASE_DIR_GINO:-${RESULTS_BASE_DIR:-}}"
+    resolve_with_default PREDICTIONS_BASE_DIR "${PREDICTIONS_BASE_DIR_GINO:-${PREDICTIONS_BASE_DIR:-}}"
+else
+    resolve_with_default RESULTS_BASE_DIR "${RESULTS_BASE_DIR_FNO:-${RESULTS_BASE_DIR:-}}"
+    resolve_with_default PREDICTIONS_BASE_DIR "${PREDICTIONS_BASE_DIR_FNO:-${PREDICTIONS_BASE_DIR:-}}"
+fi
+
+require_set PYTHON_ENV
+require_set BASE_DATA_DIR
+require_set LOG_DIR
+require_set RESULTS_BASE_DIR
+require_set PREDICTIONS_BASE_DIR
+
+mkdir -p "$LOG_DIR" "$RESULTS_BASE_DIR" "$PREDICTIONS_BASE_DIR"
+
+REQUIRED_VARS=(PYTHON_ENV BASE_DATA_DIR LOG_DIR RESULTS_BASE_DIR PREDICTIONS_BASE_DIR)
+MISSING_VARS=()
+for required_var in "${REQUIRED_VARS[@]}"; do
+    if [ -z "${!required_var:-}" ]; then
+        MISSING_VARS+=("$required_var")
+    fi
+done
+
+if [ ${#MISSING_VARS[@]} -gt 0 ]; then
+    echo "Error: Missing required path/env vars: ${MISSING_VARS[*]}"
+    echo "Hint: define them in $PATHS_FILE."
+    exit 1
+fi
+
+QSUB_EXPORTS="CONFIG=${CONFIG_NAME},PATHS_FILE=${PATHS_FILE},PYTHON_ENV=${PYTHON_ENV},BASE_DATA_DIR=${BASE_DATA_DIR},LOG_DIR=${LOG_DIR},RESULTS_BASE_DIR=${RESULTS_BASE_DIR},PREDICTIONS_BASE_DIR=${PREDICTIONS_BASE_DIR}"
+
 # Handle different modes
 if [ "$MODE" == "predict" ]; then
     # Predict mode
@@ -160,25 +227,10 @@ if [ "$MODE" == "predict" ]; then
         [ -n "$*" ] && echo "  Additional args: $*"
         # Base64 encode the arguments to avoid PBS quoting issues
         ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0 2>/dev/null || echo "$ADDITIONAL_ARGS" | base64) # fallback for macOS
-        if [ "$RUN_LOCAL" -eq 1 ]; then
-            export CONFIG="${CONFIG_NAME}"
-            export ARGS_B64="${ARGS_B64}"
-            export PBS_O_WORKDIR="${SCRIPT_DIR}"
-            export PBS_JOBID="local_$$"
-            bash "$PREDICT_PBS_SCRIPT"
-        else
-            qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$PREDICT_PBS_SCRIPT"
-        fi
+        submit_job "$PREDICT_PBS_SCRIPT" "$ARGS_B64"
     else
         echo "Submitting ${MODEL_TYPE_UPPER} prediction job with config: $CONFIG_NAME"
-        if [ "$RUN_LOCAL" -eq 1 ]; then
-            export CONFIG="${CONFIG_NAME}"
-            export PBS_O_WORKDIR="${SCRIPT_DIR}"
-            export PBS_JOBID="local_$$"
-            bash "$PREDICT_PBS_SCRIPT"
-        else
-            qsub -v "CONFIG=${CONFIG_NAME}" "$PREDICT_PBS_SCRIPT"
-        fi
+        submit_job "$PREDICT_PBS_SCRIPT"
     fi
     
     echo ""
@@ -217,15 +269,7 @@ elif [ "$MODE" == "resume" ]; then
     
     # Base64 encode the arguments to avoid PBS quoting issues
     ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0 2>/dev/null || echo "$ADDITIONAL_ARGS" | base64)
-    if [ "$RUN_LOCAL" -eq 1 ]; then
-        export CONFIG="${CONFIG_NAME}"
-        export ARGS_B64="${ARGS_B64}"
-        export PBS_O_WORKDIR="${SCRIPT_DIR}"
-        export PBS_JOBID="local_$$"
-        bash "$TRAIN_PBS_SCRIPT"
-    else
-        qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$TRAIN_PBS_SCRIPT"
-    fi
+    submit_job "$TRAIN_PBS_SCRIPT" "$ARGS_B64"
     
     echo ""
     echo "Results will be saved to: $(basename "$RESULTS_BASE_DIR")/${CONFIG_NAME}/"
@@ -239,25 +283,10 @@ else
         [ -n "$*" ] && echo "  Additional args: $*"
         # Base64 encode the arguments to avoid PBS quoting issues
         ARGS_B64=$(echo "$ADDITIONAL_ARGS" | base64 -w 0 2>/dev/null || echo "$ADDITIONAL_ARGS" | base64)
-        if [ "$RUN_LOCAL" -eq 1 ]; then
-            export CONFIG="${CONFIG_NAME}"
-            export ARGS_B64="${ARGS_B64}"
-            export PBS_O_WORKDIR="${SCRIPT_DIR}"
-            export PBS_JOBID="local_$$"
-            bash "$TRAIN_PBS_SCRIPT"
-        else
-            qsub -v "CONFIG=${CONFIG_NAME},ARGS_B64=${ARGS_B64}" "$TRAIN_PBS_SCRIPT"
-        fi
+        submit_job "$TRAIN_PBS_SCRIPT" "$ARGS_B64"
     else
         echo "Submitting ${MODEL_TYPE_UPPER} training job with config: $CONFIG_NAME"
-        if [ "$RUN_LOCAL" -eq 1 ]; then
-            export CONFIG="${CONFIG_NAME}"
-            export PBS_O_WORKDIR="${SCRIPT_DIR}"
-            export PBS_JOBID="local_$$"
-            bash "$TRAIN_PBS_SCRIPT"
-        else
-            qsub -v "CONFIG=${CONFIG_NAME}" "$TRAIN_PBS_SCRIPT"
-        fi
+        submit_job "$TRAIN_PBS_SCRIPT"
     fi
     
     echo ""
@@ -265,8 +294,12 @@ else
 fi
 
 echo ""
-echo "Monitor job status:"
-echo "  qstat -u \$USER"
+if [ "$USE_QSUB" == "1" ]; then
+    echo "Monitor job status:"
+    echo "  qstat -u \$USER"
+else
+    echo "Execution mode: direct (qsub bypassed by USE_QSUB=0)"
+fi
 echo ""
 echo "View logs:"
 if [ "$MODE" == "predict" ]; then

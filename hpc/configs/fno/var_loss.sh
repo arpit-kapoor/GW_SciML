@@ -1,4 +1,6 @@
 #!/bin/bash
+
+
 # Default FNOInterpolate configuration (bilinear interpolation, 2 variables)
 
 TRAIN_ARGS="

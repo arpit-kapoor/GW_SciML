@@ -1,4 +1,6 @@
 #!/bin/bash
+
+
 TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir filter_patch 
