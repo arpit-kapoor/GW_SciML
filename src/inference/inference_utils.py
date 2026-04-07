@@ -58,6 +58,9 @@ def setup_inference_arguments(description, default_base_data_dir, default_result
                        help='Ratio of nodes to keep in each patch (0 < ratio <= 1.0). Default is 1.0 (no subsampling)')
     parser.add_argument('--min-resolution-ratio', type=float, default=0.20,
                        help='Minimum per-patch ratio used by dynamic subsampling (0 < min_ratio <= resolution_ratio)')
+    parser.add_argument('--sampling-strategy', type=str, default='dynamic',
+                       choices=['dynamic', 'static'],
+                       help='Subsampling mode: dynamic adjusts ratio per patch by variability, static uses a uniform ratio for all patches')
     
     # Output control
     parser.add_argument('--metrics-only', action='store_true', default=False,

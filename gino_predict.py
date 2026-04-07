@@ -168,6 +168,7 @@ def main():
     # Create datasets with multi-column support
     print("\nCreating datasets...")
     if args.resolution_ratio < 1.0:
+        print(f"Using sampling strategy: {args.sampling_strategy}")
         print(f"Using resolution ratio: {args.resolution_ratio} (subsampling to {args.resolution_ratio*100:.1f}% of nodes)")
         print(f"Using minimum resolution ratio: {args.min_resolution_ratio}")
     train_ds, val_ds = create_patch_datasets(
@@ -182,6 +183,7 @@ def main():
         forcings_required=args.forcings_required,
         resolution_ratio=args.resolution_ratio,
         min_resolution_ratio=args.min_resolution_ratio,
+        sampling_strategy=args.sampling_strategy,
     )
     
     print(f"Train dataset length: {len(train_ds)}")

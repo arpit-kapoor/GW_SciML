@@ -182,6 +182,7 @@ if __name__ == "__main__":
     )
     print("Creating datasets...")
     if args.resolution_ratio < 1.0:
+        print(f"Using sampling strategy: {args.sampling_strategy}")
         print(f"Using resolution ratio: {args.resolution_ratio} (subsampling to {args.resolution_ratio*100:.1f}% of nodes)")
         print(f"Using minimum resolution ratio: {args.min_resolution_ratio}")
     train_ds, val_ds = create_patch_datasets(
@@ -196,6 +197,7 @@ if __name__ == "__main__":
         forcings_transform=calculate_forcings_transform(),
         resolution_ratio=args.resolution_ratio,
         min_resolution_ratio=args.min_resolution_ratio,
+        sampling_strategy=args.sampling_strategy,
     )
     
     print(f"Dataset sizes - Train: {len(train_ds)}, Val: {len(val_ds)}")

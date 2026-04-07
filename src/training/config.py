@@ -110,6 +110,9 @@ def setup_training_arguments(
                        help='Ratio of nodes to keep in each patch (0 < ratio <= 1.0). Default is 1.0 (no subsampling)')
     parser.add_argument('--min-resolution-ratio', type=float, default=0.20,
                        help='Minimum per-patch ratio used by dynamic subsampling (0 < min_ratio <= resolution_ratio)')
+    parser.add_argument('--sampling-strategy', type=str, default='dynamic',
+                       choices=['dynamic', 'static'],
+                       help='Subsampling mode: dynamic adjusts ratio per patch by variability, static uses a uniform ratio for all patches')
     
     # Other parameters
     parser.add_argument('--device', type=str, default='auto',

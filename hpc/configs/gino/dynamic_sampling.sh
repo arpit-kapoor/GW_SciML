@@ -16,6 +16,7 @@ TRAIN_ARGS="
 --grad-clip-norm 1.0 
 --save-checkpoint-every 10
 --lambda-conc-focus 0.3
+--sampling-strategy dynamic
 --resolution-ratio 0.60
 --min-resolution-ratio 0.20
 --forcings-required

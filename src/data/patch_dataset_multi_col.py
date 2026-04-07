@@ -30,7 +30,8 @@ class GWPatchDatasetMultiCol(Dataset):
         forcings_transform=None,
         forcings_required=False,
         resolution_ratio=1.0,
-        min_resolution_ratio=0.20
+        min_resolution_ratio=0.20,
+        sampling_strategy='dynamic'
     ):
         """
         Initialize the GWPatchDatasetMultiCol.
@@ -48,6 +49,7 @@ class GWPatchDatasetMultiCol(Dataset):
             forcings_required (bool): Whether forcings data is required for the model.
             resolution_ratio (float): Ratio of nodes to keep in each patch (0 < ratio <= 1.0). Default is 1.0 (no subsampling).
             min_resolution_ratio (float): Minimum per-patch sampling ratio used in dynamic subsampling.
+            sampling_strategy (str): Subsampling strategy, either 'dynamic' or 'static'.
         """
         self.data_path = data_path
         self.dataset = dataset
@@ -58,6 +60,7 @@ class GWPatchDatasetMultiCol(Dataset):
         self.forcings_required = forcings_required
         self.resolution_ratio = resolution_ratio
         self.min_resolution_ratio = min_resolution_ratio
+        self.sampling_strategy = sampling_strategy
 
 
         # Load and process patch data
@@ -67,7 +70,8 @@ class GWPatchDatasetMultiCol(Dataset):
             dataset=dataset,
             target_col_indices=target_col_indices,
             resolution_ratio=resolution_ratio,
-            min_resolution_ratio=min_resolution_ratio
+            min_resolution_ratio=min_resolution_ratio,
+            sampling_strategy=sampling_strategy
         )
         
         # Compute weights based on temporal variances across all patches
@@ -219,7 +223,8 @@ class GWPatchDatasetMultiCol(Dataset):
         dataset='train',
         target_col_indices=None,
         resolution_ratio=1.0,
-        min_resolution_ratio=0.20
+        min_resolution_ratio=0.20,
+        sampling_strategy='dynamic'
     ):
         """
         Load patch data from the data directory with multi-column support.
@@ -233,6 +238,7 @@ class GWPatchDatasetMultiCol(Dataset):
             resolution_ratio (float): Global ratio of nodes to keep in each patch (0 < ratio <= 1.0).
                 Subsampling rate is scaled per-patch based on its temporal variance.
             min_resolution_ratio (float): Minimum per-patch sampling ratio after dynamic scaling.
+            sampling_strategy (str): Subsampling strategy, either 'dynamic' or 'static'.
 
         Returns:
             list: List of patch data dictionaries, each containing patch_id, core/ghost coords and obs.
@@ -247,7 +253,10 @@ class GWPatchDatasetMultiCol(Dataset):
         # 1. Pre-calculate dynamic resolution ratios per patch based on variability
         # =========================================================================
         patch_ratios = {}
-        if resolution_ratio < (1.0 - ratio_eps):
+        if sampling_strategy not in ('dynamic', 'static'):
+            raise ValueError(f"Invalid sampling_strategy '{sampling_strategy}'. Expected 'dynamic' or 'static'.")
+
+        if sampling_strategy == 'dynamic' and resolution_ratio < (1.0 - ratio_eps):
             print("Pre-calculating patch variability to adjust sampling rates...")
             patch_vars = []
             
@@ -289,7 +298,11 @@ class GWPatchDatasetMultiCol(Dataset):
             print(f"Dynamic patch ratios computed. Range: [{min(patch_ratios.values()):.4f} - {max(patch_ratios.values()):.4f}]")
 
         else:
-            patch_ratios = {d: 1.0 for d in patch_dirs}
+            if sampling_strategy == 'static':
+                patch_ratios = {d: resolution_ratio for d in patch_dirs}
+                print(f"Static sampling enabled. Uniform patch ratio: {resolution_ratio:.4f}")
+            else:
+                patch_ratios = {d: 1.0 for d in patch_dirs}
 
         # =========================================================================
         # 2. Main data loading loop
