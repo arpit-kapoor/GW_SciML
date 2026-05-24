@@ -61,6 +61,9 @@ class GWPatchDatasetMultiCol(Dataset):
         self.resolution_ratio = resolution_ratio
         self.min_resolution_ratio = min_resolution_ratio
         self.sampling_strategy = sampling_strategy
+        self.input_window_size = input_window_size
+        self.output_window_size = output_window_size
+        self.target_col_indices = target_col_indices
 
 
         # Load and process patch data
@@ -289,8 +292,9 @@ class GWPatchDatasetMultiCol(Dataset):
                 # Scale the global resolution_ratio by this patch's relative variability
                 adjusted_ratio = resolution_ratio * weight_factor
                 
-                # Cap the ratio so we don't exceed resolution_ratio and keep a configurable floor.
-                patch_ratios[patch_dir] = min(resolution_ratio, max(min_resolution_ratio, adjusted_ratio))
+                # Cap the ratio at 1.0 (so we can keep up to 100% of nodes in highly variable patches)
+                # and keep a configurable floor for low variability patches.
+                patch_ratios[patch_dir] = min(1.0, max(min_resolution_ratio, adjusted_ratio))
 
                 print(f"Patch: {patch_dir}, Variability: {patch_vars[i]:.6f}, Weight Factor: {weight_factor:.6f}, Adjusted Ratio: {patch_ratios[patch_dir]:.4f}")
 
