@@ -48,38 +48,63 @@ def calculate_coord_transform(raw_data_dir, coord_columns=['X', 'Y', 'Z'], repre
     return coord_transform
 
 
-def calculate_obs_transform(raw_data_dir, target_obs_cols, representative_file='0000.csv'):
+def calculate_obs_transform(raw_data_dir, target_obs_cols):
     """
-    Calculate mean and std of output variables and create observation transform.
-
-    Normalizes all listed columns for consistency. This is generic and can work
-    with any set of observation columns.
+    Calculate pooled mean and std of output variables across all files 
+    and create an observation transform.
     
     Args:
         raw_data_dir (str): Directory containing raw CSV files
         target_obs_cols (list): List of observation column names to normalize
-        representative_file (str): Name of representative file to use for statistics
         
     Returns:
         Normalize: Transform object for observation normalization
     """
-    # Read representative data file
-    file_path = os.path.join(raw_data_dir, representative_file)
-    df = pd.read_csv(file_path)
+    csv_files = [f for f in os.listdir(raw_data_dir) if f.endswith('.csv')]
+    
+    if not csv_files:
+        raise ValueError(f"No CSV files found in {raw_data_dir}")
 
-    # Calculate normalization statistics
-    obs_mean = df[target_obs_cols].mean().values
-    obs_std = df[target_obs_cols].std().values
+    obs_mean_arr, obs_std_arr, size_arr = [], [], []
 
-    # Print normalization statistics for debugging
+    print(f"Calculating observation transform for columns: {target_obs_cols}")
+    
+    for csv_file in sorted(csv_files):
+        file_path = os.path.join(raw_data_dir, csv_file)
+        df = pd.read_csv(file_path)
+        
+        # Skip empty files to avoid NaN values in our math
+        if len(df) == 0:
+            continue
+            
+        file_level_mean = df[target_obs_cols].mean().values
+        # Use ddof=0 for population standard deviation to match the pooled formula
+        file_level_std = df[target_obs_cols].std(ddof=0).values 
+        
+        obs_mean_arr.append(file_level_mean)
+        obs_std_arr.append(file_level_std)
+        size_arr.append(len(df))
+
+    # Convert to numpy arrays
+    obs_mean_arr = np.array(obs_mean_arr)
+    obs_std_arr = np.array(obs_std_arr)
+    size_arr = np.expand_dims(np.array(size_arr), axis=-1)
+
+    # 1. Calculate pooled mean
+    total_size = np.sum(size_arr, axis=0)
+    obs_mean = np.sum(size_arr * obs_mean_arr, axis=0) / total_size
+
+    # 2. Calculate pooled variance, then take the square root for pooled std
+    pooled_variance = (np.sum(size_arr * np.square(obs_std_arr), axis=0) + 
+                       np.sum(size_arr * np.square(obs_mean_arr - obs_mean), axis=0)) / total_size
+    obs_std = np.sqrt(pooled_variance)
+
     print(f"Output mean: {obs_mean}")
     print(f"Output std: {obs_std}")
 
     # Define output transform
     obs_transform = Normalize(mean=obs_mean, std=obs_std)
 
-    # Clean up memory
-    del df
     return obs_transform
 
 

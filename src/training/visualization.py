@@ -48,21 +48,21 @@ def plot_training_curves(loss_dict, args):
              linewidth=2, marker='s', markersize=4)
     
     # Dynamically plot additional loss components if they exist
-    additional_losses = {
-        'train_global_losses': ('b--', 'Training Global Loss', '^'),
-        'train_conc_var_losses': ('b-.', 'Training Conc Variance Loss', 'v'),
-        'val_global_losses': ('r--', 'Validation Global Loss', 'd'),
-        'val_conc_var_losses': ('r-.', 'Validation Conc Variance Loss', 'x'),
-    }
+    # additional_losses = {
+    #     'train_global_losses': ('b--', 'Training Global Loss', '^'),
+    #     'train_conc_var_losses': ('b-.', 'Training Conc Variance Loss', 'v'),
+    #     'val_global_losses': ('r--', 'Validation Global Loss', 'd'),
+    #     'val_conc_var_losses': ('r-.', 'Validation Conc Variance Loss', 'x'),
+    # }
     
-    for loss_key, (style, label, marker) in additional_losses.items():
-        if loss_key in accumulated and accumulated[loss_key]:
-            loss_data = accumulated[loss_key]
-            # Calculate offset for losses that start later than main losses
-            offset = len(accumulated_train) - len(loss_data)
-            loss_epochs = range(offset + 1, len(accumulated_train) + 1)
-            plt.plot(loss_epochs, loss_data, style, label=label, 
-                    linewidth=2, marker=marker, markersize=4)
+    # for loss_key, (style, label, marker) in additional_losses.items():
+    #     if loss_key in accumulated and accumulated[loss_key]:
+    #         loss_data = accumulated[loss_key]
+    #         # Calculate offset for losses that start later than main losses
+    #         offset = len(accumulated_train) - len(loss_data)
+    #         loss_epochs = range(offset + 1, len(accumulated_train) + 1)
+    #         plt.plot(loss_epochs, loss_data, style, label=label, 
+    #                 linewidth=2, marker=marker, markersize=4)
     
     # Add visual indicators for resume points if this is a resumed session
     if hasattr(args, 'resume_from') and args.resume_from is not None:

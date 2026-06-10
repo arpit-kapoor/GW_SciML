@@ -243,3 +243,94 @@ if __name__ == "__main__":
     print(f"\n{'='*60}")
     print(f"Training complete! Model saved to: {model_path}")
     print(f"{'='*60}")
+
+    # ---------------------------------------------------------
+    # INJECTED CODE: Compute & save raw targets and predictions
+    # ---------------------------------------------------------
+    import numpy as np
+    from src.training.trainer import _default_gino_forward, _default_extract_core_points
+
+    print("\nComputing final predictions for train and val datasets...")
+
+    # Recreate the train loader without shuffling for 1:1 consistent mapping
+    eval_train_sampler = PatchBatchSampler(
+        train_ds, batch_size=args.batch_size,
+        shuffle_within_batches=False,
+        shuffle_patches=False,
+        seed=None
+    )
+    eval_train_loader = DataLoader(
+        train_ds, 
+        batch_sampler=eval_train_sampler, 
+        collate_fn=train_loader.collate_fn
+    )
+
+    def collect_predictions(loader):
+        model.eval()
+        all_preds = {}
+        all_targets = {}
+        patch_id = 0
+        prev_nodes = -1
+
+        
+        with torch.no_grad():
+            for batch in loader:
+                # Forward pass
+                outputs = _default_gino_forward(model, batch, args)
+                # Filter out the boundary 'ghost' patches
+                core_outputs, core_targets, _ = _default_extract_core_points(outputs, batch, args)
+
+                batch_size = core_outputs.shape[0]
+                num_nodes = core_outputs.shape[1]
+
+                if num_nodes != prev_nodes:
+                    patch_id += 1
+                    print(f"Processing patch {patch_id} with {num_nodes} nodes (prev: {prev_nodes})")
+                    all_preds[patch_id] = []
+                    all_targets[patch_id] = []
+
+                all_preds[patch_id].append(core_outputs.cpu().numpy())
+                all_targets[patch_id].append(core_targets.cpu().numpy())
+
+                prev_nodes = num_nodes
+            
+        for patch_id in all_preds.keys():
+            all_preds[patch_id] = np.concatenate(all_preds[patch_id], axis=0)
+            all_targets[patch_id] = np.concatenate(all_targets[patch_id], axis=0)
+
+        all_preds_array = np.transpose(np.concatenate(list(all_preds.values()), axis=1), (1, 0, 2))
+        all_targets_array = np.transpose(np.concatenate(list(all_targets.values()), axis=1), (1, 0, 2))
+
+        print(f"Collected predictions and targets for {len(all_preds)} nodes. Final shapes - Preds: {all_preds_array.shape}, Targets: {all_targets_array.shape}")
+        return all_preds_array, all_targets_array
+
+
+    # Compute mean and std for inverse normalization
+    obs_mean = obs_transform.mean[args.target_col_indices].cpu().numpy()
+    obs_std = obs_transform.std[args.target_col_indices].cpu().numpy()
+    print(f"Applying inverse normalization to predictions and targets using mean: {obs_mean}, std: {obs_std}")
+    
+    print("Processing Validation Set...")
+    val_preds, val_targets = collect_predictions(val_loader)
+
+    # Inverse transform predictions and targets to original scale
+    val_preds = val_preds * obs_std + obs_mean
+    val_targets = val_targets * obs_std + obs_mean
+    
+    # Save the predictions and targets as .npy files for later analysis
+    np.save(os.path.join(args.results_dir, 'val_preds.npy'), val_preds)
+    np.save(os.path.join(args.results_dir, 'val_targets.npy'), val_targets)
+
+    print("Processing Training Set...")
+    train_preds, train_targets = collect_predictions(eval_train_loader)
+
+    # Inverse transform predictions and targets to original scale
+    train_preds = train_preds * obs_std + obs_mean
+    train_targets = train_targets * obs_std + obs_mean
+    
+    # Save the predictions and targets as .npy files for later analysis
+    np.save(os.path.join(args.results_dir, 'train_preds.npy'), train_preds)
+    np.save(os.path.join(args.results_dir, 'train_targets.npy'), train_targets)
+
+    print(f"Evaluations complete! Saved train/val '.npy' predictions and targets to {args.results_dir}")
+

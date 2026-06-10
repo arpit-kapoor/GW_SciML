@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -P yl75
-#PBS -l walltime=12:00:00
+#PBS -l walltime=24:00:00
 #PBS -q gpuvolta
 #PBS -l ncpus=24
 #PBS -l ngpus=2

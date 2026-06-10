@@ -396,6 +396,8 @@ class GWPatchDatasetMultiCol(Dataset):
             # Variance of mass concentration (index 0) across time for each node
             temporal_variances = np.var(core_obs_train[..., 0], axis=0)  # [n_points]
 
+            print(f"Core obs before transform: ({core_obs.mean(axis=(0,1))}, {core_obs.std(axis=(0,1))})")
+
             # Apply coordinate and observation transforms if provided
             if self.coord_transform is not None:
                 core_coords = self.coord_transform(core_coords)
@@ -406,6 +408,8 @@ class GWPatchDatasetMultiCol(Dataset):
             if self.forcings_transform is not None:
                 core_forcings = self.forcings_transform(core_forcings)
                 ghost_forcings = self.forcings_transform(ghost_forcings)
+
+            print(f"Core obs after transform: ({core_obs.mean(axis=(0,1))}, {core_obs.std(axis=(0,1))})")
 
             # Select and concatenate target columns
             if target_col_indices is not None:
@@ -418,6 +422,7 @@ class GWPatchDatasetMultiCol(Dataset):
                 # If only one column selected, add dimension
                 core_obs = core_obs[..., np.newaxis]
                 ghost_obs = ghost_obs[..., np.newaxis]
+            
 
             if dataset == 'train':
                 patch_data.append({
@@ -441,6 +446,10 @@ class GWPatchDatasetMultiCol(Dataset):
                     'core_forcings': core_forcings[train_idx:],
                     'ghost_forcings': ghost_forcings[train_idx:]
                 })
+
+            
+
+        
 
         return patch_data
     

@@ -319,9 +319,8 @@ def _load_timestep_for_patch(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     ts_df = pd.read_csv(
         os.path.join(raw_data_dir, ts_file),
-        usecols=TARGET_COLS,
         low_memory=False,
-    )
+    )[TARGET_COLS]
     ts_vals = ts_df.to_numpy()
 
     if clip_negative_mass_concentration:
@@ -332,9 +331,8 @@ def _load_timestep_for_patch(
 
     forcing_df = pd.read_csv(
         os.path.join(forcings_data_dir, ts_file),
-        usecols=FORCING_COLS,
         low_memory=False,
-    )
+    )[FORCING_COLS]
     forcing_vals = forcing_df.to_numpy()
 
     return (
