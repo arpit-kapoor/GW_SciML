@@ -13,8 +13,8 @@ def main():
     results_dir = os.path.expanduser('~/OneDrive - The University of Sydney (Staff)/Shared/Projects/01_PhD/03_Physics_Informed/05_groundwater/groundwater_main/results/')
 
     # # Using the high-res updated formulation as per notebook
-    # results_dir = os.path.join(results_dir, 'updated_lowres', 'resolution_1.0/gino_predictions_20260326_161714')
-    results_dir = os.path.join(results_dir, 'updated_lowres', 'resolution_0.167/gino_predictions_20260326_162706')
+    # results_dir = os.path.join(results_dir, 'updated_lowres', 'resolution_0.167/gino_predictions_20260327_211533')
+    results_dir = os.path.join(results_dir, 'updated_lowres', 'resolution_1.0/gino_predictions_20260327_092303')
     
     val_preds = np.load(os.path.join(results_dir, 'val_predictions.npy'))
     coords = pickle.load(open(os.path.join(results_dir, 'train_coords.pkl'), 'rb'))[0]
@@ -194,10 +194,31 @@ def main():
         '#5E4FA2', '#3973B5', '#4CB2D4', '#32C2A3', '#45D86A', 
         '#8DEB45', '#C4FA4B', '#E7FE57', '#FEE44F', '#FB9736'
     ]
-    cmap = mcolors.ListedColormap(feflow_colors)
-    norm = mcolors.BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+    
+    # Toggle to plot true continuous values instead of discrete fringes
+    plot_true_values = True
+    
+    if plot_true_values:
+        cmap = mcolors.LinearSegmentedColormap.from_list('feflow_continuous', feflow_colors)
+        norm = mcolors.Normalize(vmin=0, vmax=35000)
+        contour_kwargs = dict(levels=np.linspace(0, 35000, 100), cmap=cmap, norm=norm, extend='both')
+    else:
+        cmap = mcolors.ListedColormap(feflow_colors)
+        norm = mcolors.BoundaryNorm(levels, ncolors=cmap.N, clip=True)
+        contour_kwargs = dict(levels=levels, cmap=cmap, norm=norm, extend='both')
 
     triangulation = mtri.Triangulation(s_coords, z_coords, triangles)
+
+    # Optional: Mask a subset region (e.g. 600 to 750 on x-axis and -45 to 5 on z-axis)
+    apply_mask = True
+    mask_s_min, mask_s_max = 650, 750
+    mask_z_min, mask_z_max = -10, 5
+
+    if apply_mask:
+        s_mid = np.mean(s_coords[triangles], axis=1)
+        z_mid = np.mean(z_coords[triangles], axis=1)
+        mask = ~((s_mid >= mask_s_min) & (s_mid <= mask_s_max) & (z_mid >= mask_z_min) & (z_mid <= mask_z_max))
+        triangulation.set_mask(mask)
 
     def init():
         axes[0].clear()
@@ -211,20 +232,26 @@ def main():
         preds_frame = preds_vals_all[:, frame]
         targets_frame = targets_vals_all[:, frame]
         
-        cf_target = axes[0].tricontourf(triangulation, targets_frame, levels=levels, cmap=cmap, norm=norm, extend='both')
+        cf_target = axes[0].tricontourf(triangulation, targets_frame, **contour_kwargs)
         axes[0].set_title(f'GROUND TRUTH - Time Step: {frame}')
         axes[0].set_ylabel('Elevation Z (m)')
         axes[0].set_facecolor('white')
 
-        cf_pred = axes[1].tricontourf(triangulation, preds_frame, levels=levels, cmap=cmap, norm=norm, extend='both')
+        cf_pred = axes[1].tricontourf(triangulation, preds_frame, **contour_kwargs)
         axes[1].set_title(f'PREDICTIONS - Time Step: {frame}')
         axes[1].set_xlabel(f'Distance along transect from P1 (m)')
         axes[1].set_facecolor('white')
         
-        axes[0].set_xlim(s_coords.min(), s_coords.max())
-        axes[0].set_ylim(z_coords.min(), z_coords.max())
-        axes[1].set_xlim(s_coords.min(), s_coords.max())
-        axes[1].set_ylim(z_coords.min(), z_coords.max())
+        if apply_mask:
+            axes[0].set_xlim(mask_s_min, mask_s_max)
+            axes[0].set_ylim(mask_z_min, mask_z_max)
+            axes[1].set_xlim(mask_s_min, mask_s_max)
+            axes[1].set_ylim(mask_z_min, mask_z_max)
+        else:
+            axes[0].set_xlim(s_coords.min(), s_coords.max())
+            axes[0].set_ylim(z_coords.min(), z_coords.max())
+            axes[1].set_xlim(s_coords.min(), s_coords.max())
+            axes[1].set_ylim(z_coords.min(), z_coords.max())
         
         return []
 
@@ -233,9 +260,11 @@ def main():
     cbar_ax = fig.add_axes([0.90, 0.15, 0.02, 0.7])
     
     # We create a dummy contour to generate the colorbar
-    cf_dummy = axes[0].tricontourf(triangulation, targets_vals_all[:, 0], levels=levels, cmap=cmap, norm=norm, extend='both')
+    cf_dummy = axes[0].tricontourf(triangulation, targets_vals_all[:, 0], **contour_kwargs)
     cbar = fig.colorbar(cf_dummy, cax=cbar_ax, label='Mass Concentration (mg/l)', extend='both')
-    cbar.set_ticks([0, 1000, 5000, 10000, 15000, 20000, 25000, 30000, 34500])
+    
+    if not plot_true_values:
+        cbar.set_ticks([0, 1000, 5000, 10000, 15000, 20000, 25000, 30000, 34500])
 
     print("Generating video... This might take a few moments.")
     # Calculate time interval for 5 fps
