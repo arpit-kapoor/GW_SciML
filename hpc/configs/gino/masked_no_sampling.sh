@@ -2,10 +2,10 @@
 
 TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
---patch-data-subdir patch_all_ts
+--patch-data-subdir masked_patch_all_ts
 --target-cols mass_concentration head 
---epochs 300
---batch-size 512
+--epochs 200
+--batch-size 128
 --input-window-size 5 
 --output-window-size 1 
 --learning-rate 8e-4 
@@ -16,18 +16,18 @@ TRAIN_ARGS="
 --save-checkpoint-every 10
 --lambda-conc-focus 0
 --sampling-strategy static
---resolution-ratio 0.4
+--resolution-ratio 1.0
 --forcings-required
 --device auto
 "
 
 PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
---patch-data-subdir patch_all_ts
+--patch-data-subdir masked_patch_all_ts
 --batch-size 256
 --device auto
 --sampling-strategy static
 "
 
-RESOLUTION_RATIOS="0.40"
+RESOLUTION_RATIOS="1.0"
 
 CHECKPOINT="latest_checkpoint.pth"

@@ -182,6 +182,14 @@ class GWPatchDatasetMultiCol(Dataset):
         
         # Reshape to [n_points, window_size * n_target_cols]
         n_points = seq.shape[0]
+        # When there are no points (e.g. empty ghost nodes), the total number of
+        # elements is 0 and PyTorch cannot infer the -1 dimension unambiguously.
+        # Provide the explicit flat size to avoid the RuntimeError.
+        if n_points == 0:
+            # print(f'n_points = 0, seq.shape = {seq.shape}')
+            flat_size = seq.shape[1] * seq.shape[2]
+            # print(f'n_points = 0, flat_size = {flat_size}, seq.shape = {seq.shape}, seq.reshape(0, flat_size).shape = {seq.reshape(0, flat_size).shape}\n')
+            return seq.reshape(0, flat_size)
         seq_flat = seq.reshape(n_points, -1)
         
         return seq_flat
@@ -343,6 +351,9 @@ class GWPatchDatasetMultiCol(Dataset):
                 
                 # Calculate stride to achieve target subsampling
                 stride = max(1, n_core_points // n_subsample)
+                print(f"Stride: {stride}")
+
+                # subsample_indices = np.arange(n_core_points)[::stride]
                 
                 # Get spatially-ordered indices (sorted by Z -> Y -> X)
                 spatial_order = self._get_spatial_order_indices(core_coords)
@@ -351,7 +362,7 @@ class GWPatchDatasetMultiCol(Dataset):
                 strided_spatial_indices = spatial_order[::stride]
                 
                 # Limit to target number of samples (stride may produce slightly more)
-                subsample_indices = strided_spatial_indices[:n_subsample]
+                subsample_indices = strided_spatial_indices#[:n_subsample]
                 
                 # Sort indices back to original order for consistent array indexing
                 subsample_indices = np.sort(subsample_indices)
@@ -396,7 +407,7 @@ class GWPatchDatasetMultiCol(Dataset):
             # Variance of mass concentration (index 0) across time for each node
             temporal_variances = np.var(core_obs_train[..., 0], axis=0)  # [n_points]
 
-            print(f"Core obs before transform: ({core_obs.mean(axis=(0,1))}, {core_obs.std(axis=(0,1))})")
+            #print(f"Core obs before transform: ({core_obs.mean(axis=(0,1))}, {core_obs.std(axis=(0,1))})")
 
             # Apply coordinate and observation transforms if provided
             if self.coord_transform is not None:
@@ -409,7 +420,7 @@ class GWPatchDatasetMultiCol(Dataset):
                 core_forcings = self.forcings_transform(core_forcings)
                 ghost_forcings = self.forcings_transform(ghost_forcings)
 
-            print(f"Core obs after transform: ({core_obs.mean(axis=(0,1))}, {core_obs.std(axis=(0,1))})")
+            #print(f"Core obs after transform: ({core_obs.mean(axis=(0,1))}, {core_obs.std(axis=(0,1))})")
 
             # Select and concatenate target columns
             if target_col_indices is not None:
@@ -446,10 +457,6 @@ class GWPatchDatasetMultiCol(Dataset):
                     'core_forcings': core_forcings[train_idx:],
                     'ghost_forcings': ghost_forcings[train_idx:]
                 })
-
-            
-
-        
 
         return patch_data
     

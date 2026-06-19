@@ -224,6 +224,14 @@ if __name__ == "__main__":
         target_cols=args.target_cols,
         lambda_conc_focus=args.lambda_conc_focus,
     )
+
+    # batch shapes
+    for batch_idx, batch in enumerate(train_loader):
+        print(f"Batch {batch_idx}: point_coords: {batch['point_coords'].shape}, \
+                latent_queries: {batch['latent_queries'].shape}, x: {batch['x'].shape}, \
+                y: {batch['y'].shape}, weights: {batch['weights'].shape}")
+        break
+    
     
     # Train model
     print("Starting training...\n")
