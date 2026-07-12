@@ -220,8 +220,8 @@ class GWPatchDatasetMultiCol(Dataset):
         # This mimics typical FEM mesh node ordering where nodes are assigned
         # layer-by-layer (Z), then row-by-row (Y), then column-by-column (X)
         sort_indices = np.lexsort((
-            coords_norm[:, 0],   # X (tertiary sort key)
-            coords_norm[:, 1],   # Y (secondary sort key)
+            coords_norm[:, 1],   # X (tertiary sort key)
+            coords_norm[:, 0],   # Y (secondary sort key)
             coords_norm[:, 2]    # Z (primary sort key - layers/slices)
         ))
         
@@ -353,10 +353,11 @@ class GWPatchDatasetMultiCol(Dataset):
                 stride = max(1, n_core_points // n_subsample)
                 print(f"Stride: {stride}")
 
-                # subsample_indices = np.arange(n_core_points)[::stride]
+                subsample_indices = np.arange(n_core_points)[::stride]
                 
                 # Get spatially-ordered indices (sorted by Z -> Y -> X)
                 spatial_order = self._get_spatial_order_indices(core_coords)
+                print(f"Core coords shape: {core_coords.shape}")
                 
                 # Apply stride over spatially-ordered points for uniform spatial coverage
                 strided_spatial_indices = spatial_order[::stride]
@@ -366,6 +367,8 @@ class GWPatchDatasetMultiCol(Dataset):
                 
                 # Sort indices back to original order for consistent array indexing
                 subsample_indices = np.sort(subsample_indices)
+
+                # subsample_indices = np.arange(len(core_coords))[::stride]
                 
                 # Apply subsampling to core data
                 core_coords = core_coords[subsample_indices]

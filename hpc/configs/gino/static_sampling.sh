@@ -4,7 +4,7 @@ TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head 
---epochs 300
+--epochs 400
 --batch-size 512
 --input-window-size 5 
 --output-window-size 1 
@@ -19,6 +19,7 @@ TRAIN_ARGS="
 --resolution-ratio 0.4
 --forcings-required
 --device auto
+--gno-radius 0.21
 "
 
 PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
@@ -26,8 +27,9 @@ PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --batch-size 256
 --device auto
 --sampling-strategy static
+--gno-radius 0.24
 "
 
-RESOLUTION_RATIOS="0.40"
+RESOLUTION_RATIOS="1.0"
 
 CHECKPOINT="latest_checkpoint.pth"

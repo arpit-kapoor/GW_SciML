@@ -74,6 +74,11 @@ except Exception as _e:
 
 def add_gino_model_args(parser):
     """Add GINO-specific model arguments to the parser."""
+    parser.add_argument('--gno-radius', type=float, default=None,
+                        help='Override the default GNO radius (default: 0.18). '
+                             'Also overrides the value read from a checkpoint when '
+                             'resuming training, so the model is re-instantiated '
+                             'with this radius rather than the one saved in the checkpoint.')
     return parser
 
 
@@ -81,7 +86,9 @@ def define_model_parameters(args):
     """Define GINO architecture parameters based on input configuration."""
     args.coord_dim = 3
     args.n_target_cols = len(args.target_cols)
-    args.gno_radius = 0.18
+    # Preserve CLI-supplied --gno-radius; fall back to the hardcoded default.
+    if not hasattr(args, 'gno_radius') or args.gno_radius is None:
+        args.gno_radius = 0.18
     args.in_gno_out_channels = args.input_window_size * args.n_target_cols
     if args.forcings_required:
         args.forcings_dim = 4  # Number of forcings features
@@ -152,8 +159,19 @@ if __name__ == "__main__":
         add_model_specific_args=add_gino_model_args
     )
     
+    # Capture CLI-supplied --gno-radius before define_model_parameters may set
+    # the default (None means the user did not pass the flag).
+    cli_gno_radius = getattr(args, 'gno_radius', None)
+
     # Configure GINO model parameters and target columns
     args = define_model_parameters(args)
+
+    # Log effective gno_radius and whether it came from the CLI or the default.
+    if cli_gno_radius is not None:
+        print(f"GNO radius: {args.gno_radius} (overridden via --gno-radius; "
+              "also applies when resuming from checkpoint)")
+    else:
+        print(f"GNO radius: {args.gno_radius} (default)")
     args = configure_target_col_indices(args)
     print("Training configuration:")
     for k in sorted(vars(args)):

@@ -40,6 +40,11 @@ from src.inference.metrics import (
 
 def add_gino_model_args(parser):
     """Add GINO-specific model arguments (if needed)."""
+    parser.add_argument('--gno-radius', type=float, default=None,
+                        help='Override the GNO radius stored in the checkpoint. '
+                             'Use when predicting at a different resolution ratio '
+                             'than training (e.g. resolution_ratio=1.0 with a model '
+                             'trained at resolution_ratio=0.4).')
     return parser
 
 
@@ -56,23 +61,33 @@ def configure_model_parameters_from_checkpoint(checkpoint):
     return saved_args
 
 
-def define_gino_from_checkpoint(checkpoint, device):
+def define_gino_from_checkpoint(checkpoint, device, gno_radius_override=None):
     """
     Create GINO model instance from checkpoint configuration.
     
     Args:
         checkpoint (dict): Loaded checkpoint dictionary
         device (str): Device to load model on
+        gno_radius_override (float, optional): If provided, overrides the GNO radius
+            stored in the checkpoint for both the input and output GNO blocks.
+            Useful when predicting at a different spatial resolution than training.
         
     Returns:
         GINO: Instantiated GINO model
     """
     saved_args = checkpoint['args']
     
+    if gno_radius_override is not None:
+        gno_radius = gno_radius_override
+        print(f"GNO radius: {gno_radius} (overridden from checkpoint value {saved_args.gno_radius})")
+    else:
+        gno_radius = saved_args.gno_radius
+        print(f"GNO radius: {gno_radius} (from checkpoint)")
+    
     model = GINO(
         # Input GNO configuration
         in_gno_coord_dim=saved_args.coord_dim,
-        in_gno_radius=saved_args.gno_radius,
+        in_gno_radius=gno_radius,
         in_gno_out_channels=saved_args.in_gno_out_channels,
         in_gno_channel_mlp_layers=saved_args.in_gno_channel_mlp_layers,
         
@@ -84,7 +99,7 @@ def define_gino_from_checkpoint(checkpoint, device):
         
         # Output GNO configuration
         out_gno_coord_dim=saved_args.coord_dim,
-        out_gno_radius=saved_args.gno_radius,
+        out_gno_radius=gno_radius,
         out_gno_channel_mlp_layers=saved_args.out_gno_channel_mlp_layers,
         projection_channel_ratio=saved_args.projection_channel_ratio,
         out_channels=saved_args.out_channels,
@@ -189,10 +204,17 @@ def main():
     print(f"Train dataset length: {len(train_ds)}")
     print(f"Val dataset length: {len(val_ds)}")
     
-    # Create model
+    # Create model — use a closure so the optional radius override is forwarded
+    # through create_model_from_checkpoint's (checkpoint, device) factory signature.
+    def gino_factory(checkpoint, device):
+        return define_gino_from_checkpoint(
+            checkpoint, device,
+            gno_radius_override=args.gno_radius
+        )
+
     model = create_model_from_checkpoint(
         checkpoint,
-        model_factory=define_gino_from_checkpoint,
+        model_factory=gino_factory,
         device=args.device
     )
     
