@@ -63,7 +63,8 @@ def train_model(
         'train_conc_var_losses': [],
         'val_losses': [],
         'val_global_losses': [],
-        'val_conc_var_losses': []
+        'val_conc_var_losses': [],
+        'val_epochs': []  # tracks which epochs had validation evaluation
     }
     
     # Load checkpoint if resuming training
@@ -92,26 +93,28 @@ def train_model(
             if train_key in loss_dict:
                 loss_dict[train_key].append(value)
         
-        # Evaluate on validation set
-        val_losses = evaluate_model(
-            val_loader, model, loss_fn, args, forward_fn, extract_core_fn
-        )
-        
-        # Record validation losses
-        for key, value in val_losses.items():
-            val_key = f'val_{key}' if not key.startswith('val_') else key
-            if val_key in loss_dict:
-                loss_dict[val_key].append(value)
-        
-        # Print epoch summary
+        # Print epoch training summary (no validation yet)
         train_loss = epoch_losses.get('losses', epoch_losses.get('train_losses', 0))
-        val_loss = val_losses.get('losses', val_losses.get('val_losses', 0))
         print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) "
-              f"Epoch {epoch+1} - Training Loss: {train_loss:.4f}, "
-              f"Validation Loss: {val_loss:.4f}")
+              f"Epoch {epoch+1} - Training Loss: {train_loss:.4f}")
         
-        # Save checkpoint periodically
+        # Evaluate on validation set and save checkpoint periodically
         if (epoch + 1) % args.save_checkpoint_every == 0:
+            val_losses = evaluate_model(
+                val_loader, model, loss_fn, args, forward_fn, extract_core_fn
+            )
+            
+            # Record validation losses and the epoch at which they were computed
+            for key, value in val_losses.items():
+                val_key = f'val_{key}' if not key.startswith('val_') else key
+                if val_key in loss_dict:
+                    loss_dict[val_key].append(value)
+            loss_dict['val_epochs'].append(epoch + 1)
+            
+            val_loss = val_losses.get('losses', val_losses.get('val_losses', 0))
+            print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) "
+                  f"Epoch {epoch+1} - Validation Loss: {val_loss:.4f}")
+            
             from .parallel_utils import unwrap_model_for_state_dict
             save_checkpoint(
                 model, optimizer, scheduler, epoch, loss_dict, args,

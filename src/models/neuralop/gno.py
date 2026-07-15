@@ -234,18 +234,18 @@ class GNOBlock(nn.Module):
 
         neighbors_dict = self.neighbor_search(data=y, queries=x, radius=self.radius)
 
-        # --- Diagnostic: neighbour-count statistics per query point ---
-        n_nbrs = neighbors_dict["neighbors_row_splits"][1:] - neighbors_dict["neighbors_row_splits"][:-1]
-        n_empty = (n_nbrs == 0).sum().item()
-        print(
-            f"[GNOBlock reduction={self.integral_transform.reduction}] "
-            f"radius={self.radius:.4f} | "
-            f"n_queries={x.shape[0]} | "
-            f"min_nbrs={n_nbrs.min().item()} | "
-            f"max_nbrs={n_nbrs.max().item()} | "
-            f"zero_nbr_queries={n_empty}"
-        )
-        # --------------------------------------------------------------
+        # # --- Diagnostic: neighbour-count statistics per query point ---
+        # n_nbrs = neighbors_dict["neighbors_row_splits"][1:] - neighbors_dict["neighbors_row_splits"][:-1]
+        # n_empty = (n_nbrs == 0).sum().item()
+        # print(
+        #     f"[GNOBlock reduction={self.integral_transform.reduction}] "
+        #     f"radius={self.radius:.4f} | "
+        #     f"n_queries={x.shape[0]} | "
+        #     f"min_nbrs={n_nbrs.min().item()} | "
+        #     f"max_nbrs={n_nbrs.max().item()} | "
+        #     f"zero_nbr_queries={n_empty}"
+        # )
+        # # --------------------------------------------------------------
 
         if self.pos_embedding is not None:
             y_embed = self.pos_embedding(y)

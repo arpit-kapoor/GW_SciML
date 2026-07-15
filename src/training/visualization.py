@@ -32,8 +32,11 @@ def plot_training_curves(loss_dict, args):
     # Extract main losses (required)
     accumulated_train = accumulated.get('train_losses', [])
     accumulated_val = accumulated.get('val_losses', [])
+    # val_epochs records the actual epoch numbers at which validation was run.
+    # Falls back to every epoch (dense) for backward compatibility.
+    val_epochs_list = accumulated.get('val_epochs', [])
     
-    if not accumulated_train or not accumulated_val:
+    if not accumulated_train:
         print("Warning: No loss data to plot")
         return
     
@@ -41,11 +44,20 @@ def plot_training_curves(loss_dict, args):
     plt.figure(figsize=(12, 8))
     epochs = range(1, len(accumulated_train) + 1)
     
-    # Plot main losses (solid lines)
+    # Plot main training loss (solid line)
     plt.plot(epochs, accumulated_train, 'b-', label='Training Loss', 
              linewidth=2, marker='o', markersize=4)
-    plt.plot(epochs, accumulated_val, 'r-', label='Validation Loss', 
-             linewidth=2, marker='s', markersize=4)
+    
+    # Plot validation loss only at the epochs where it was evaluated
+    if accumulated_val:
+        if val_epochs_list and len(val_epochs_list) == len(accumulated_val):
+            # Sparse validation: plot at the recorded epoch numbers
+            plt.plot(val_epochs_list, accumulated_val, 'r-', label='Validation Loss',
+                     linewidth=2, marker='s', markersize=4)
+        else:
+            # Dense (legacy) validation: one point per training epoch
+            plt.plot(epochs, accumulated_val, 'r-', label='Validation Loss',
+                     linewidth=2, marker='s', markersize=4)
     
     # Dynamically plot additional loss components if they exist
     # additional_losses = {
@@ -120,11 +132,10 @@ def _format_loss_statistics(accumulated):
     if not accumulated_train:
         return ""
     
-    stats = [
-        f'Total Epochs: {len(accumulated_train)}',
-        f'Min Train Loss: {min(accumulated_train):.4f}',
-        f'Min Val Loss: {min(accumulated_val):.4f}'
-    ]
+    stats = [f'Total Epochs: {len(accumulated_train)}',
+             f'Min Train Loss: {min(accumulated_train):.4f}']
+    if accumulated_val:
+        stats.append(f'Min Val Loss: {min(accumulated_val):.4f}')
     
     # Add stats for other loss components if they exist
     additional_stats = {
