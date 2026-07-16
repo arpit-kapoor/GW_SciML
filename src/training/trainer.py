@@ -70,10 +70,16 @@ def train_model(
     # Load checkpoint if resuming training
     if hasattr(args, 'resume_from') and args.resume_from is not None:
         from .parallel_utils import unwrap_model_for_state_dict
+        default_loss_dict = loss_dict  # keep reference to the default structure
         start_epoch, loss_dict = load_checkpoint(
             args.resume_from, model, optimizer, scheduler, args,
             unwrap_fn=unwrap_model_for_state_dict
         )
+        # Backfill any keys introduced in newer versions that may be absent
+        # from checkpoints saved by older code (e.g. 'val_epochs').
+        for key, default_value in default_loss_dict.items():
+            if key not in loss_dict:
+                loss_dict[key] = default_value
     
     # Training loop
     for epoch in range(start_epoch, args.epochs):

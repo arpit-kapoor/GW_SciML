@@ -145,14 +145,16 @@ def load_checkpoint(
     # Get training progress
     start_epoch = checkpoint['epoch'] + 1  # Resume from next epoch
     
-    # Extract all loss histories from checkpoint
+    # Extract all loss histories and epoch-tracking lists from checkpoint.
+    # Keys containing 'loss' cover loss histories; keys containing 'epochs'
+    # cover epoch-index tracking lists like 'val_epochs'.
     loss_dict = {}
     for key in checkpoint.keys():
-        if 'loss' in key.lower() or key in ['train_losses', 'val_losses']:
+        if 'loss' in key.lower() or 'epochs' in key.lower():
             loss_dict[key] = checkpoint.get(key, [])
     
     # Backward compatibility: Ensure we have empty lists if losses are missing
-    for loss_key in ['train_losses', 'val_losses']:
+    for loss_key in ['train_losses', 'val_losses', 'val_epochs']:
         if loss_key not in loss_dict:
             loss_dict[loss_key] = []
     
