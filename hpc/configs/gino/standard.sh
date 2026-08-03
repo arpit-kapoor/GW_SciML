@@ -4,7 +4,7 @@ TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head
---epochs 200
+--epochs 500
 --batch-size 512
 --input-window-size 5
 --output-window-size 1
@@ -27,7 +27,7 @@ PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --batch-size 128
 --device auto
 --sampling-strategy static
---gno-radius 0.26
+--gno-radius 0.28
 "
 
 RESOLUTION_RATIOS="1.0"

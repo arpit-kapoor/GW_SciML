@@ -1,14 +1,14 @@
 #!/bin/bash
 #PBS -N FNO_Train
 #PBS -P yl75
-#PBS -q dgxa100
-#PBS -l ncpus=32
-#PBS -l ngpus=2
-#PBS -l mem=256GB
+#PBS -l walltime=12:00:00
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=95GB
 #PBS -l jobfs=100GB
+#PBS -l wd
 #PBS -l storage=scratch/yl75
-#PBS -l walltime=2:00:00
-#PBS -o /dev/null
 #PBS -e /dev/null
 #PBS -m abe
 

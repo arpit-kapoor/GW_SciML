@@ -351,13 +351,10 @@ class GWPatchDatasetMultiCol(Dataset):
                 
                 # Calculate stride to achieve target subsampling
                 stride = max(1, n_core_points // n_subsample)
-                print(f"Stride: {stride}")
-
                 subsample_indices = np.arange(n_core_points)[::stride]
                 
                 # Get spatially-ordered indices (sorted by Z -> Y -> X)
                 spatial_order = self._get_spatial_order_indices(core_coords)
-                print(f"Core coords shape: {core_coords.shape}")
                 
                 # Apply stride over spatially-ordered points for uniform spatial coverage
                 strided_spatial_indices = spatial_order[::stride]

@@ -316,6 +316,14 @@ def get_accumulated_losses(loss_dict, args, checkpoint_path=None):
         if loss_key != 'train_losses' and loss_key != 'val_losses':
             accumulated[loss_key] = [x for x in accumulated[loss_key] if x is not None]
     
+    # Also carry forward any list-typed keys from existing_history that the current
+    # session did not record (e.g. val_epochs recorded in a previous run but not
+    # re-emitted by the trainer in this session). Without this they would be silently
+    # dropped, causing a shape mismatch in the visualisation.
+    for loss_key, existing_losses in existing_history.items():
+        if loss_key not in accumulated and isinstance(existing_losses, list):
+            accumulated[loss_key] = existing_losses
+    
     return accumulated
 
 

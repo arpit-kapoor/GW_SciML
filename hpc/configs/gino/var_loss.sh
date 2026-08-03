@@ -4,7 +4,7 @@ TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head 
---epochs 200
+--epochs 500
 --batch-size 512
 --input-window-size 5 
 --output-window-size 1 
@@ -30,6 +30,6 @@ PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --gno-radius 0.26
 "
 
-RESOLUTION_RATIOS="1.0"
+RESOLUTION_RATIOS="0.3 1.0"
 
 CHECKPOINT="latest_checkpoint.pth"

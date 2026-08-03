@@ -54,9 +54,25 @@ def plot_training_curves(loss_dict, args):
             # Sparse validation: plot at the recorded epoch numbers
             plt.plot(val_epochs_list, accumulated_val, 'r-', label='Validation Loss',
                      linewidth=2, marker='s', markersize=4)
-        else:
+        elif val_epochs_list and len(val_epochs_list) != len(accumulated_val):
+            # Length mismatch between val_epochs and val_losses (stale/mixed history).
+            # Trim both to the shorter of the two so we can still produce a useful plot.
+            n = min(len(val_epochs_list), len(accumulated_val))
+            print(f"Warning: val_epochs ({len(val_epochs_list)}) and val_losses "
+                  f"({len(accumulated_val)}) length mismatch - trimming to {n} points.")
+            plt.plot(val_epochs_list[:n], accumulated_val[-n:], 'r-', label='Validation Loss',
+                     linewidth=2, marker='s', markersize=4)
+        elif len(accumulated_val) == len(accumulated_train):
             # Dense (legacy) validation: one point per training epoch
             plt.plot(epochs, accumulated_val, 'r-', label='Validation Loss',
+                     linewidth=2, marker='s', markersize=4)
+        else:
+            # Lengths don't match and no val_epochs recorded - plot against available indices
+            val_epochs_fallback = range(1, len(accumulated_val) + 1)
+            print(f"Warning: val_losses ({len(accumulated_val)}) does not match train epochs "
+                  f"({len(accumulated_train)}) and no val_epochs recorded. "
+                  f"Plotting against validation step indices.")
+            plt.plot(val_epochs_fallback, accumulated_val, 'r-', label='Validation Loss',
                      linewidth=2, marker='s', markersize=4)
     
     # Dynamically plot additional loss components if they exist
