@@ -25,6 +25,7 @@ from src.inference import (
     load_checkpoint,
     create_model_from_checkpoint,
     generate_predictions,
+    generate_rolling_predictions,
     organize_and_save_results,
     create_results_directory,
 )
@@ -45,6 +46,16 @@ def add_gino_model_args(parser):
                              'Use when predicting at a different resolution ratio '
                              'than training (e.g. resolution_ratio=1.0 with a model '
                              'trained at resolution_ratio=0.4).')
+    parser.add_argument('--rolling-sequence', action='store_true', default=False,
+                        help='Enable autoregressive / rolling-sequence prediction mode. '
+                             'In this mode the model solves an initial-value problem: '
+                             'the first window of each patch uses ground-truth inputs, '
+                             'then subsequent windows roll the model outputs back into '
+                             'the input buffer (replacing ground-truth observations). '
+                             'Results are saved to a rolling_sequence/ sub-directory.')
+    parser.add_argument('--val-only', action='store_true', default=False,
+                        help='Only run and save predictions for the validation set. '
+                             'Skips the training set entirely to save time and disk space.')
     return parser
 
 
@@ -224,14 +235,34 @@ def main():
     args.latent_query_dims = checkpoint['args'].latent_query_dims
     collate_fn = make_collate_fn(args, coord_dim=args.coord_dim)
     
-    # Generate predictions
-    train_results = generate_predictions(
-        model, train_ds, args,
-        dataset_name='train',
-        collate_fn=collate_fn
-    )
-    
-    val_results = generate_predictions(
+    # Generate predictions (standard teacher-forcing OR rolling autoregressive mode)
+    if args.rolling_sequence:
+        print("\n" + "="*60)
+        print("EVALUATION MODE: Rolling Sequence (Initial-Value Problem)")
+        print("  - First window  : ground-truth inputs")
+        print("  - Later windows : model outputs rolled into input buffer")
+        print("  - Ghost points  : always use ground-truth (boundary cond.)")
+        print("="*60)
+        _predict_fn = generate_rolling_predictions
+    else:
+        print("\nEVALUATION MODE: Standard (Teacher Forcing)")
+        _predict_fn = generate_predictions
+
+    if args.val_only:
+        print("\nDataset scope: VAL ONLY (--val-only flag set, skipping train set)")
+
+    # --- Train set ---
+    if not args.val_only:
+        train_results = _predict_fn(
+            model, train_ds, args,
+            dataset_name='train',
+            collate_fn=collate_fn
+        )
+    else:
+        train_results = None
+
+    # --- Val set ---
+    val_results = _predict_fn(
         model, val_ds, args,
         dataset_name='val',
         collate_fn=collate_fn
@@ -246,12 +277,13 @@ def main():
     # Always reshape regardless of output_window_size
     # For output_window_size=1, this changes [N, P, C] to [N, P, 1, C]
     # For output_window_size>1, this de-interleaves [t0_v0, t0_v1, t1_v0, t1_v1, ...]
-    train_results['predictions'] = reshape_multi_col_predictions(
-        train_results['predictions'], args.output_window_size, n_target_cols
-    )
-    train_results['targets'] = reshape_multi_col_predictions(
-        train_results['targets'], args.output_window_size, n_target_cols
-    )
+    if train_results is not None:
+        train_results['predictions'] = reshape_multi_col_predictions(
+            train_results['predictions'], args.output_window_size, n_target_cols
+        )
+        train_results['targets'] = reshape_multi_col_predictions(
+            train_results['targets'], args.output_window_size, n_target_cols
+        )
     val_results['predictions'] = reshape_multi_col_predictions(
         val_results['predictions'], args.output_window_size, n_target_cols
     )
@@ -259,32 +291,48 @@ def main():
         val_results['targets'], args.output_window_size, n_target_cols
     )
     
-    print(f"Reshaped predictions to: {train_results['predictions'].shape}")
-    print(f"Reshaped targets to: {train_results['targets'].shape}")
+    if train_results is not None:
+        print(f"Reshaped train predictions to: {train_results['predictions'].shape}")
+        print(f"Reshaped train targets to:     {train_results['targets'].shape}")
+    print(f"Reshaped val predictions to:   {val_results['predictions'].shape}")
+    print(f"Reshaped val targets to:       {val_results['targets'].shape}")
+
+    if train_results is not None:
+        print(f"Train predictions range: [{train_results['predictions'].min(axis=(0, 1, 2)):.3f}, {train_results['predictions'].max(axis=(0, 1, 2)):.3f}]")
+        print(f"Train targets range: [{train_results['targets'].min(axis=(0, 1, 2)):.3f}, {train_results['targets'].max(axis=(0, 1, 2)):.3f}]")
     
     # Denormalize predictions and targets after reshaping
     print("\nDenormalizing predictions and targets...")
-    train_results['predictions'] = denormalize_observations(
-        train_results['predictions'], obs_transform, args.target_col_indices
-    )
-    train_results['targets'] = denormalize_observations(
-        train_results['targets'], obs_transform, args.target_col_indices
-    )
+    if train_results is not None:
+        train_results['predictions'] = denormalize_observations(
+            train_results['predictions'], obs_transform, args.target_col_indices
+        )
+        train_results['targets'] = denormalize_observations(
+            train_results['targets'], obs_transform, args.target_col_indices
+        )
     val_results['predictions'] = denormalize_observations(
         val_results['predictions'], obs_transform, args.target_col_indices
     )
     val_results['targets'] = denormalize_observations(
         val_results['targets'], obs_transform, args.target_col_indices
     )
-    print(f"Denormalized train predictions range: [{train_results['predictions'].min():.3f}, {train_results['predictions'].max():.3f}]")
-    print(f"Denormalized train targets range: [{train_results['targets'].min():.3f}, {train_results['targets'].max():.3f}]")
+    if train_results is not None:
+        print(f"Denormalized train predictions range: [{train_results['predictions'].min():.3f}, {train_results['predictions'].max():.3f}]")
+        print(f"Denormalized train targets range:     [{train_results['targets'].min():.3f}, {train_results['targets'].max():.3f}]")
     
-    results_dict = {
-        'train': train_results,
-        'val': val_results
-    }
+    results_dict = {'val': val_results}
+    if train_results is not None:
+        results_dict['train'] = train_results
     
-    # Save results
+    # Save results (redirect to sub-directory when in rolling mode)
+    results_dir_final = args.results_dir
+    if args.rolling_sequence:
+        import os
+        results_dir_final = os.path.join(args.results_dir, 'rolling_sequence')
+        os.makedirs(results_dir_final, exist_ok=True)
+        args.results_dir = results_dir_final
+        print(f"\nRolling-sequence results will be saved to: {results_dir_final}")
+
     organize_and_save_results(results_dict, args)
     
     # Compute and save metrics
@@ -311,6 +359,10 @@ def main():
     print(f"Results saved to: {args.results_dir}")
     if args.metrics_only:
         print("Mode: Metrics only (arrays and plots skipped)")
+    if args.rolling_sequence:
+        print("Evaluation mode: Rolling Sequence (Initial-Value Problem)")
+    if args.val_only:
+        print("Dataset scope: Val only")
     print("="*60)
 
 

@@ -156,7 +156,7 @@ def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform
     """
     metrics = {}
     
-    for dataset_name in ['train', 'val']:
+    for dataset_name in [d for d in ['train', 'val'] if d in results_dict]:
         # Get data (may be normalized or denormalized)
         predictions_data = results_dict[dataset_name]['predictions']  # [N_samples, N_points, output_window_size, n_target_cols]
         targets_data = results_dict[dataset_name]['targets']

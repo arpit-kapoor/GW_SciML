@@ -232,6 +232,235 @@ def generate_predictions(model, dataset, args, dataset_name='dataset',
     }
 
 
+# ---------------------------------------------------------------------------
+# Rolling (autoregressive) prediction helpers
+# ---------------------------------------------------------------------------
+
+def _roll_buffer(buffer, prev_pred, input_window_size, output_window_size, n_obs_features):
+    """
+    Update the rolling observation buffer by shifting left and appending the
+    latest model prediction.
+
+    The buffer stores the last `input_window_size` time-steps worth of
+    (normalised) observations, laid out as
+    ``[N_points, input_window_size * n_obs_features]`` (row-major, same layout
+    produced by ``_concat_sequence`` in the dataset).
+
+    Args:
+        buffer (np.ndarray): Current buffer ``[N_points, W_in * F]``.
+        prev_pred (np.ndarray): Model output from the previous step
+            ``[N_points, W_out * F]`` (core points only).
+        input_window_size (int): W_in — number of time-steps in the input.
+        output_window_size (int): W_out — number of time-steps in the output.
+        n_obs_features (int): F — number of observation features per time-step.
+
+    Returns:
+        np.ndarray: Updated buffer ``[N_points, W_in * F]``.
+    """
+    n_points = buffer.shape[0]
+    # Reshape to [N_points, W_in, F] for easy slicing along the time axis
+    buf_3d = buffer.reshape(n_points, input_window_size, n_obs_features)
+
+    # Shift: drop the oldest W_out steps, keep steps [W_out:]
+    kept = buf_3d[:, output_window_size:, :]          # [N_points, W_in - W_out, F]
+
+    # Append the prediction as the new trailing W_out steps
+    pred_3d = prev_pred.reshape(n_points, output_window_size, n_obs_features)  # [N_points, W_out, F]
+    updated = np.concatenate([kept, pred_3d], axis=1)  # [N_points, W_in, F]
+
+    return updated.reshape(n_points, input_window_size * n_obs_features)
+
+
+def generate_rolling_predictions(model, dataset, args, dataset_name='dataset',
+                                  forward_fn=None, collate_fn=None):
+    """
+    Generate autoregressive (rolling-sequence) predictions for an entire dataset.
+
+    This implements the initial-value-problem (IVP) evaluation setting:
+
+    * **First window per patch** — the model receives the ground-truth input
+      window (the true initial condition).
+    * **Subsequent windows** — the model's previous output is rolled into the
+      trailing ``output_window_size`` slots of the input buffer, replacing the
+      corresponding ground-truth observations.  Leading slots that are not
+      covered by the most-recent prediction continue to hold predictions from
+      earlier steps (or the original ground truth for the very first window),
+      which is the correct behaviour when ``input_window_size > output_window_size``.
+    * **Forcings** — when ``forcings_required=True`` the dataset concatenates
+      forcings channels onto ``x``.  In rolling mode only the *observation*
+      portion of ``x`` is replaced; future forcings are still read from the
+      current sample so that externally-prescribed boundary conditions remain
+      accurate.
+
+    The function returns the same dict shape as :func:`generate_predictions` so
+    all downstream processing (reshape, denormalise, metrics, visualisation)
+    works without modification.
+
+    Args:
+        model (torch.nn.Module): Trained model in eval mode.
+        dataset: PyTorch dataset (must expose ``get_all_patch_ids()``).
+        args (argparse.Namespace): Must contain ``batch_size``, ``device``,
+            ``input_window_size``, ``output_window_size``, and optionally
+            ``forcings_required``.
+        dataset_name (str): Name used for logging.
+        forward_fn (callable, optional): Custom ``(model, batch, args)`` →
+            ``(outputs, core_output, core_target, core_coords)`` function.  If
+            *None* the default GINO-style forward pass is used.
+        collate_fn (callable, optional): Collate function passed to DataLoader.
+
+    Returns:
+        dict: Same keys as :func:`generate_predictions`:
+            ``predictions``, ``targets``, ``coords``, ``metadata``.
+    """
+    print(f"\nGenerating ROLLING predictions for {dataset_name} dataset...")
+    print(f"  input_window_size  = {args.input_window_size}")
+    print(f"  output_window_size = {args.output_window_size}")
+
+    from torch.utils.data import DataLoader
+    from ..data.batch_sampler import PatchBatchSampler
+
+    W_in  = args.input_window_size
+    W_out = args.output_window_size
+    forcings_required = getattr(args, 'forcings_required', False)
+
+    # -----------------------------------------------------------------------
+    # Group dataset indices by patch_id (preserving temporal order)
+    # -----------------------------------------------------------------------
+    all_patch_ids = dataset.get_all_patch_ids()       # [N_samples]
+    unique_patches = sorted(set(all_patch_ids.tolist()))
+
+    # Map each patch_id → list of dataset indices in temporal order
+    patch_index_map = {pid: [] for pid in unique_patches}
+    for idx, pid in enumerate(all_patch_ids.tolist()):
+        patch_index_map[pid].append(idx)
+
+    all_predictions = {}   # patch_id → list of arrays [B, N_core, W_out*F]
+    all_targets     = {}   # patch_id → list of arrays [B, N_core, W_out*F]
+    all_coords      = {}   # patch_id → list of arrays [B, N_core, coord_dim]
+    all_patch_metadata = []
+
+    model.eval()
+    with torch.no_grad():
+        for pid in tqdm(unique_patches, desc=f"Rolling {dataset_name}"):
+            indices = patch_index_map[pid]  # temporal order
+
+            # Initialise rolling buffer (will be set on the first step)
+            rolling_buffer = None   # [N_core, W_in * n_obs_feat]
+            prev_pred_core = None   # [N_core, W_out * n_obs_feat]
+
+            all_predictions[pid] = []
+            all_targets[pid]     = []
+            all_coords[pid]      = []
+
+            for step_idx, ds_idx in enumerate(indices):
+                # Fetch single sample and collate into a batch of 1
+                sample = dataset[ds_idx]
+                batch  = collate_fn([sample]) if collate_fn is not None else _simple_collate([sample])
+
+                # ---- Determine sizes from first step -------------------------
+                if step_idx == 0:
+                    core_len = batch['core_len']
+                    x_full   = batch['x']  # [1, N_total, C_total]
+                    n_total_feat = x_full.shape[-1]  # W_in * n_obs_feat [+ W_out * n_forc_feat]
+
+                    if forcings_required:
+                        # obs channels: W_in * n_obs_feat
+                        # forc channels: remaining
+                        n_obs_feat_flat  = W_in * (n_total_feat // W_in - (
+                            n_total_feat % W_in != 0))  # heuristic fallback
+                        # Safer: dataset tells us n_target_cols via args
+                        n_target_cols    = len(getattr(args, 'target_cols', ['head']))
+                        n_obs_feat_flat  = W_in * n_target_cols    # W_in * n_obs_feat
+                        n_forc_feat_flat = n_total_feat - n_obs_feat_flat
+                    else:
+                        n_target_cols   = len(getattr(args, 'target_cols', ['head']))
+                        n_obs_feat_flat = n_total_feat              # all features are obs
+                        n_forc_feat_flat = 0
+
+                    n_obs_feat = n_target_cols  # features per time-step
+
+                    # Seed buffer from ground-truth core observations (first W_in steps)
+                    rolling_buffer = x_full[0, :core_len, :n_obs_feat_flat].cpu().numpy()
+                    # shape: [N_core, W_in * n_obs_feat]
+
+                # ---- Build modified x with rolling buffer -------------------
+                x_current = batch['x'].clone()   # [1, N_total, C_total]
+
+                if step_idx == 0:
+                    # First window: use true inputs unmodified
+                    pass
+                else:
+                    # Replace obs portion of core points with rolling buffer
+                    x_current[0, :core_len, :n_obs_feat_flat] = torch.from_numpy(rolling_buffer)
+                    # Ghost point obs channels are NOT updated (they act as
+                    # boundary conditions and remain ground-truth)
+
+                batch['x'] = x_current
+
+                # ---- Forward pass -------------------------------------------
+                if forward_fn is not None:
+                    outputs, core_output, core_target, core_coords = forward_fn(model, batch, args)
+                else:
+                    outputs, core_output, core_target, core_coords = _default_forward(model, batch, args)
+                # core_output: [1, N_core, W_out * n_obs_feat]  (numpy)
+
+                # ---- Update rolling buffer ----------------------------------
+                prev_pred_core = core_output[0]   # [N_core, W_out * n_obs_feat]
+                rolling_buffer = _roll_buffer(
+                    rolling_buffer, prev_pred_core,
+                    W_in, W_out, n_obs_feat
+                )
+
+                # ---- Accumulate results ------------------------------------
+                all_predictions[pid].append(core_output)
+                all_targets[pid].append(core_target)
+                all_coords[pid].append(core_coords)
+
+                all_patch_metadata.append({
+                    'batch_idx': step_idx,
+                    'sample_idx': 0,
+                    'patch_id': pid,
+                    'dataset': dataset_name,
+                    'core_len': core_len,
+                    'rolling_step': step_idx,
+                })
+
+    # -----------------------------------------------------------------------
+    # Concatenate results in the same layout as generate_predictions
+    # -----------------------------------------------------------------------
+    for pid in unique_patches:
+        all_predictions[pid] = np.concatenate(all_predictions[pid], axis=0)
+        all_targets[pid]     = np.concatenate(all_targets[pid],     axis=0)
+        all_coords[pid]      = np.concatenate(all_coords[pid],      axis=0)
+
+    predictions = np.concatenate(list(all_predictions.values()), axis=1)
+    targets     = np.concatenate(list(all_targets.values()),     axis=1)
+    coords      = np.concatenate(list(all_coords.values()),      axis=1)
+
+    print(f"{dataset_name} rolling predictions shape: {predictions.shape}")
+    print(f"{dataset_name} rolling targets shape:     {targets.shape}")
+    print(f"{dataset_name} rolling coords shape:      {coords.shape}")
+
+    return {
+        'predictions': predictions,
+        'targets':     targets,
+        'coords':      coords,
+        'metadata':    all_patch_metadata,
+    }
+
+
+def _simple_collate(samples):
+    """Minimal collate that stacks torch tensors and passes other values through."""
+    batch = {}
+    for key in samples[0].keys():
+        vals = [s[key] for s in samples]
+        if isinstance(vals[0], torch.Tensor):
+            batch[key] = torch.stack(vals, dim=0)
+        else:
+            batch[key] = vals[0]
+    return batch
+
+
 def _default_forward(model, batch, args):
     """
     Default forward pass for GINO-style models.

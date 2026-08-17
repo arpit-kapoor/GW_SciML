@@ -24,10 +24,12 @@ TRAIN_ARGS="
 
 PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
---batch-size 128
+--batch-size 256
 --device auto
 --sampling-strategy static
 --gno-radius 0.26
+--rolling-sequence
+--val-only
 "
 
 RESOLUTION_RATIOS="0.3 1.0"

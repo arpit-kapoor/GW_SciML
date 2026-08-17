@@ -13,6 +13,7 @@ from .inference_utils import (
     load_checkpoint,
     create_model_from_checkpoint,
     generate_predictions,
+    generate_rolling_predictions,
 )
 
 from .results import (
@@ -45,6 +46,7 @@ __all__ = [
     'load_checkpoint',
     'create_model_from_checkpoint',
     'generate_predictions',
+    'generate_rolling_predictions',
     
     # Results management
     'create_results_directory',
