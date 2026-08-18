@@ -10,6 +10,7 @@ Usage:
 
 import torch
 import numpy as np
+import functools
 import os
 from src.data.data_utils import (
     calculate_coord_transform,
@@ -227,7 +228,7 @@ def main():
         print("  - Later windows : model outputs rolled into input buffer")
         print("  - Ghost points  : always use ground-truth (boundary cond.)")
         print("="*60)
-        _predict_fn = generate_rolling_predictions
+        _predict_fn = functools.partial(generate_rolling_predictions, obs_transform=obs_transform)
     else:
         print("\nEVALUATION MODE: Standard (Teacher Forcing)")
         _predict_fn = generate_predictions

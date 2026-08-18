@@ -31,6 +31,8 @@ PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --batch-size 256
 --sampling-strategy static
 --device auto
+--rolling-sequence
+--val-only
 "
 
 RESOLUTION_RATIOS="0.3 1.0"

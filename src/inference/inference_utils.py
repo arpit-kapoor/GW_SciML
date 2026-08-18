@@ -272,7 +272,8 @@ def _roll_buffer(buffer, prev_pred, input_window_size, output_window_size, n_obs
 
 
 def generate_rolling_predictions(model, dataset, args, dataset_name='dataset',
-                                  forward_fn=None, collate_fn=None):
+                                  forward_fn=None, collate_fn=None,
+                                  obs_transform=None):
     """
     Generate autoregressive (rolling-sequence) predictions for an entire dataset.
 
@@ -307,6 +308,8 @@ def generate_rolling_predictions(model, dataset, args, dataset_name='dataset',
             ``(outputs, core_output, core_target, core_coords)`` function.  If
             *None* the default GINO-style forward pass is used.
         collate_fn (callable, optional): Collate function passed to DataLoader.
+        obs_transform (callable, optional): Normalization transform used for
+            clamping physical constraints (like mass_concentration >= 0).
 
     Returns:
         dict: Same keys as :func:`generate_predictions`:
@@ -403,6 +406,31 @@ def generate_rolling_predictions(model, dataset, args, dataset_name='dataset',
                 else:
                     outputs, core_output, core_target, core_coords = _default_forward(model, batch, args)
                 # core_output: [1, N_core, W_out * n_obs_feat]  (numpy)
+
+                # ---- Apply Physical Constraints (Clamping) ------------------
+                # Clamp mass_concentration >= 0 to prevent unphysical negative mass
+                # which causes exponential blowout in PDE surrogates.
+                if obs_transform is not None and hasattr(args, 'target_cols') and hasattr(args, 'target_col_indices'):
+                    try:
+                        mass_idx = args.target_cols.index('mass_concentration')
+                        # Get normalization parameters for this specific column
+                        global_idx = args.target_col_indices[mass_idx]
+                        mean_mass = obs_transform.mean[global_idx]
+                        std_mass = obs_transform.std[global_idx]
+                        
+                        if isinstance(mean_mass, torch.Tensor):
+                            mean_mass = mean_mass.item()
+                            std_mass = std_mass.item()
+                            
+                        # Calculate what 0.0 maps to in normalized space
+                        norm_threshold = (0.0 - mean_mass) / std_mass
+                        
+                        # Clamp the predicted values for mass_concentration
+                        for w in range(W_out):
+                            col_idx = w * n_obs_feat + mass_idx
+                            core_output[:, :, col_idx] = np.maximum(core_output[:, :, col_idx], norm_threshold)
+                    except ValueError:
+                        pass # 'mass_concentration' not in target_cols
 
                 # ---- Update rolling buffer ----------------------------------
                 prev_pred_core = core_output[0]   # [N_core, W_out * n_obs_feat]

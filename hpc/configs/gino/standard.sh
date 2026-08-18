@@ -28,6 +28,8 @@ PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --device auto
 --sampling-strategy static
 --gno-radius 0.28
+--rolling-sequence
+--val-only
 "
 
 RESOLUTION_RATIOS="1.0"
