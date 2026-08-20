@@ -1,35 +1,39 @@
 #!/bin/bash
 
+
+# FNOInterpolate forcings configuration - aligned with GINO dataset structure
+
 TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head
---epochs 100
+--epochs 200
 --batch-size 32
---input-window-size 10
---output-window-size 20
 --learning-rate 1e-3
 --scheduler-type exponential
 --lr-scheduler-interval 10
---lr-gamma 0.98
+--lr-gamma 0.95
 --grad-clip-norm 1.0
---save-checkpoint-every 10
+--input-window-size 10
+--output-window-size 10
+--train-stride 5
 --lambda-conc-focus 0.0
+--save-checkpoint-every 10
+--padding-mode border
 --sampling-strategy static
 --resolution-ratio 0.3
+--min-resolution-ratio 0.20
 --forcings-required
 --device auto
---gno-radius 0.21
 "
 
 PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
---batch-size 128
---device auto
+--batch-size 64
 --sampling-strategy static
---gno-radius 0.28
+--device auto
 --rolling-sequence
---val-stride 20
+--val-stride 10
 --val-only
 "
 

@@ -45,7 +45,12 @@ class MLP(nn.Module):
             else None
         )
 
-        Conv = getattr(nn, f"Conv{n_dim}d")
+        self.n_dim = n_dim
+        if n_dim <= 3:
+            Conv = getattr(nn, f"Conv{n_dim}d")
+        else:
+            # Fallback to Conv1d by flattening all spatial dims
+            Conv = nn.Conv1d
         self.fcs = nn.ModuleList()
         for i in range(n_layers):
             if i == 0 and i == (n_layers - 1):
@@ -58,11 +63,20 @@ class MLP(nn.Module):
                 self.fcs.append(Conv(self.hidden_channels, self.hidden_channels, 1))
 
     def forward(self, x):
+        original_shape = x.shape
+        if self.n_dim > 3:
+            b, c = original_shape[0], original_shape[1]
+            x = x.reshape(b, c, -1)
+
         for i, fc in enumerate(self.fcs):
             x = fc(x)
             if i < self.n_layers - 1:
+                x = self.dropout[i](x) if self.dropout is not None else x
                 x = self.non_linearity(x)
-            if self.dropout is not None:
-                x = self.dropout[i](x)
+
+        if self.n_dim > 3:
+            new_shape = list(original_shape)
+            new_shape[1] = self.out_channels
+            x = x.reshape(new_shape)
 
         return x

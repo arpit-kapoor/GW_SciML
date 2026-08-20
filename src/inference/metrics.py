@@ -236,8 +236,8 @@ def save_metrics(metrics, target_cols, results_dir):
             row = {
                 'metric_name': metric_name,
                 'variable': col_name,
-                'train': metrics['train'][col_name][metric_name],
-                'val': metrics['val'][col_name][metric_name]
+                'train': metrics.get('train', {}).get(col_name, {}).get(metric_name, None),
+                'val': metrics.get('val', {}).get(col_name, {}).get(metric_name, None)
             }
             rows.append(row)
     

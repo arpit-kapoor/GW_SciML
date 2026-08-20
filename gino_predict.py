@@ -211,9 +211,12 @@ def main():
         resolution_ratio=args.resolution_ratio,
         min_resolution_ratio=args.min_resolution_ratio,
         sampling_strategy=args.sampling_strategy,
+        val_stride=getattr(args, 'val_stride', 1),
+        val_only=args.val_only,
     )
     
-    print(f"Train dataset length: {len(train_ds)}")
+    if train_ds is not None:
+        print(f"Train dataset length: {len(train_ds)}")
     print(f"Val dataset length: {len(val_ds)}")
     
     # Create model — use a closure so the optional radius override is forwarded

@@ -646,14 +646,27 @@ def variance_aware_multicol_loss(
     # reshape to [B, N, T_out, C]
     y_pred = y_pred.view(B, N, output_window_size, C)
     y_true = y_true.view(B, N, output_window_size, C)
+    
+    # Apply temporal pushforward weights
+    # Linearly increasing penalty from 1.0 to 2.0 across the output window
+    t_weights = torch.linspace(1.0, 2.0, output_window_size, device=y_pred.device)
+    t_weights = t_weights.view(1, 1, output_window_size, 1) # Broadcastable to [B, N, T, C]
+    
+    # We apply the weight to the differences
+    diff = y_pred - y_true
+    weighted_diff = diff * t_weights
+    
+    # To use LpLoss, we reconstruct a weighted y_pred as y_true + weighted_diff
+    # (Since LpLoss computes torch.norm(y_pred - y_true), this naturally handles it)
+    weighted_y_pred = y_true + weighted_diff
 
     # Global loss over all variables
     global_loss_fn = LpLoss(d=2, p=2, reduce_dims=[0, 1], reductions='mean')
-    global_loss = global_loss_fn(y_pred, y_true)
+    global_loss = global_loss_fn(weighted_y_pred, y_true)
 
-    # Variance-aware term: MSE for concentration (absolute error avoids division-by-zero)
+    # Variance-aware term: MSE for concentration
     conc_idx = target_cols.index('mass_concentration')
-    conc_pred = y_pred[..., conc_idx]   # [B, N, T]
+    conc_pred = weighted_y_pred[..., conc_idx]   # [B, N, T]
     conc_true = y_true[..., conc_idx]   # [B, N, T]
 
     weights = weights.to(y_pred.device)

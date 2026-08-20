@@ -91,18 +91,24 @@ def define_model_parameters(args):
     args.coord_dim = 3
     args.n_target_cols = len(args.target_cols)
     
-    # FNO configuration (same as GINO)
+    # FNO configuration
     args.fno_n_layers = 4
-    args.fno_n_modes = (8, 8, 6)
+    args.fno_n_modes = (8, 8, 6, 8)
     args.fno_hidden_channels = 128
     args.lifting_channels = 64
     args.projection_channel_ratio = 2
-    args.in_channels = args.input_window_size * args.n_target_cols
-    if args.forcings_required:
+    # 4D space-time FNO packs channels per point-time pair.
+    # Base channels: observations at current step
+    args.in_channels = args.n_target_cols
+    
+    if getattr(args, 'forcings_required', False):
+        # We pack 4 current forcings and 4 future forcings per point-time pair
         args.forcings_dim = 4
-        args.in_channels += args.forcings_dim
-    args.out_channels = args.output_window_size * args.n_target_cols
-    args.latent_query_dims = (16, 16, 8)
+        args.in_channels += 2 * args.forcings_dim
+        
+    args.out_channels = args.n_target_cols
+    # The latent grid covers the input window size
+    args.latent_query_dims = (16, 16, 8, args.input_window_size)
     
     return args
 
@@ -123,6 +129,72 @@ def define_fno_interpolate_model(args):
         padding_mode=args.padding_mode,
     ).to(args.device)
     return model
+
+
+def _fno_4d_forward(model, batch, args):
+    """
+    Custom forward pass for 4D space-time FNO.
+    Handles separate input and output coordinates and DataParallel broadcasting.
+    """
+    from src.training.parallel_utils import unwrap_dp, broadcast_static_inputs_for_dp
+    
+    input_coords = batch['input_coords'].to(args.device).float()
+    output_coords = batch['output_coords'].to(args.device).float()
+    latent_queries = batch['latent_queries'].to(args.device).float()
+    x = batch['x'].to(args.device).float()
+    
+    batch_size = x.shape[0]
+
+    if not model.training:
+        model = unwrap_dp(model)
+    
+    # Add fake batch dimensions to static inputs for DataParallel
+    # We broadcast input_coords and output_coords. We use broadcast_static_inputs_for_dp
+    # but pass output_coords as the third argument.
+    input_geom_b, latent_queries_b, output_queries_b = broadcast_static_inputs_for_dp(
+        input_coords, latent_queries, batch_size, output_queries=output_coords
+    )
+    
+    # Call model (DataParallelAdapter uses positional args: input_geom, latent_queries, x, output_queries)
+    outputs = model(input_geom_b, latent_queries_b, x, output_queries_b)
+    
+    return outputs
+
+
+def _fno_4d_extract_core(outputs, batch, args):
+    """
+    Custom core point extraction for 4D space-time FNO.
+    The output is (B, N_pts * T_out, C). We need to extract the core points
+    for each time step.
+    """
+    from src.data.data_utils import reshape_multi_col_predictions
+    
+    y = batch['y'].to(args.device).float()
+    core_len = batch['core_len']
+    T_out = batch['T_out']
+    C_obs = args.n_target_cols
+    
+    # Reshape outputs and targets to separate spatial and temporal dims
+    # (B, N_pts * T_out, C) -> (B, N_pts, T_out, C)
+    outputs_reshaped = reshape_multi_col_predictions(outputs, T_out, C_obs)
+    y_reshaped = reshape_multi_col_predictions(y, T_out, C_obs)
+    
+    # Extract core points (first core_len points along the spatial dimension)
+    core_outputs = outputs_reshaped[:, :core_len, :, :]  # (B, N_core, T_out, C)
+    core_targets = y_reshaped[:, :core_len, :, :]        # (B, N_core, T_out, C)
+    
+    # Reshape back to flat format for loss function (which expects 3D: B, N_core, T_out*C)
+    B = outputs.shape[0]
+    core_outputs_flat = core_outputs.reshape(B, core_len, T_out * C_obs)
+    core_targets_flat = core_targets.reshape(B, core_len, T_out * C_obs)
+    
+    # Extract weights. batch['weights'] is already tiled to (N_core * T_out).
+    # We only need the spatial weights (N_core) for the loss function.
+    # The first N_core elements correspond to time step 0, which are identical across time.
+    weights = batch['weights'].to(args.device).float()
+    core_weights = weights[:core_len]
+    
+    return core_outputs_flat, core_targets_flat, core_weights
 
 
 def create_data_loaders(train_ds, val_ds, args):
@@ -198,9 +270,13 @@ if __name__ == "__main__":
         resolution_ratio=args.resolution_ratio,
         min_resolution_ratio=args.min_resolution_ratio,
         sampling_strategy=args.sampling_strategy,
+        train_stride=args.train_stride,
     )
     
     print(f"Dataset sizes - Train: {len(train_ds)}, Val: {len(val_ds)}")
+    
+    # Store time_values on args for make_collate_fn
+    args._time_values = getattr(train_ds, 'time_values', None) if train_ds is not None else getattr(val_ds, 'time_values', None)
     
     # Create data loaders
     train_loader, val_loader = create_data_loaders(train_ds, val_ds, args)
@@ -242,6 +318,8 @@ if __name__ == "__main__":
         scheduler=scheduler,
         loss_fn=loss_fn,
         args=args,
+        forward_fn=_fno_4d_forward,
+        extract_core_fn=_fno_4d_extract_core,
     )
 
     # Save final model

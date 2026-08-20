@@ -97,6 +97,10 @@ class GINO(nn.Module):
         else:
             self.fno_in_channels = in_gno_out_channels
 
+        self.is_4d = len(fno_n_modes) == 4
+        if self.is_4d:
+            self.fno_in_channels += 1 # Temporal clock channel
+
         self.fno_blocks = FNOBlocks(
             n_layers=fno_n_layers,
             n_modes=fno_n_modes,
@@ -155,10 +159,10 @@ class GINO(nn.Module):
 
     def latent_embedding(self, in_p, ada_in=None):
 
-        # in_p : (batch, n_1 , ... , n_k, in_channels + k)
+        # in_p : (batch, n_1 , ... , n_k, in_channels)
         # ada_in : (fno_ada_in_dim, )
 
-        # permute (b, n_1, ..., n_k, c) -> (b,c, n_1,...n_k)
+        # permute (b, n_1, ..., n_k, c) -> (b, c, n_1, ..., n_k)
         in_p = in_p.permute(0, len(in_p.shape)-1, *list(range(1,len(in_p.shape)-1)))
         #Update Ada IN embedding    
         if ada_in is not None:
@@ -171,10 +175,21 @@ class GINO(nn.Module):
             if self.fno_norm == "ada_in":
                 self.fno_blocks.set_ada_in_embeddings(ada_in_embed)
 
-        #Apply FNO blocks
+        # Apply lifting MLP.
+        # For 4D (B, C, X, Y, Z, T): ChannelMLP uses Conv3d which only accepts 5D.
+        # Fold T into Batch: (B, C, X, Y, Z, T) -> (B*T, C, X, Y, Z)
+        is_6d = (in_p.ndim == 6)
+        if is_6d:
+            b_T, c_T, dx_T, dy_T, dz_T, dt_T = in_p.shape
+            in_p = in_p.permute(0, 5, 1, 2, 3, 4).contiguous().view(b_T * dt_T, c_T, dx_T, dy_T, dz_T)
+
         in_p = self.lifting(in_p)
 
-        # for idx in range(self.fno_blocks.n_layers):
+        if is_6d:
+            # Unfold T for FNO Blocks: (B*T, C_new, X, Y, Z) -> (B, C_new, X, Y, Z, T)
+            lc = in_p.shape[1]
+            in_p = in_p.view(b_T, dt_T, lc, dx_T, dy_T, dz_T).permute(0, 2, 3, 4, 5, 1).contiguous()
+
         in_p = self.fno_blocks(in_p)
 
         return in_p 
@@ -202,18 +217,49 @@ class GINO(nn.Module):
         input_geom = input_geom.squeeze(0) 
         latent_queries = latent_queries.squeeze(0)
 
+        # 4D handling
+        is_4d = self.is_4d
+        if is_4d:
+            temporal_dim_size = latent_queries.shape[-2]
+            spatial_latent_queries = latent_queries[..., 0, :self.in_gno_coord_dim]
+        else:
+            spatial_latent_queries = latent_queries
+        
+        # Reshape latent_queries if batched (safeguard)
+        expected_dims = self.in_gno_coord_dim + 2 if getattr(self, 'is_4d', False) else self.in_gno_coord_dim + 1
+        if latent_queries.ndim == expected_dims + 1:
+            latent_queries = latent_queries.squeeze(0)
+
         # Pass through input GNOBlock 
         in_p = self.in_gno(y=input_geom,
-                           x=latent_queries.view((-1, latent_queries.shape[-1])),
+                           x=spatial_latent_queries.view((-1, spatial_latent_queries.shape[-1])),
                            f_y=x)
         
-        grid_shape = latent_queries.shape[:-1] # disregard positional encoding dim
+        spatial_grid_shape = spatial_latent_queries.shape[:-1] # disregard positional encoding dim
         
         # shape (batch_size, grid1, ...gridn, -1)
-        in_p = in_p.view((batch_size, *grid_shape, -1))
+        in_p = in_p.view((batch_size, *spatial_grid_shape, -1))
         
         if latent_features is not None:
+            if is_4d and latent_features.ndim == self.in_gno_coord_dim + 3:
+                # Take t=0 for concatenation
+                latent_features = latent_features[..., 0, :]
             in_p = torch.cat((in_p, latent_features), dim=-1)
+            
+        if is_4d:
+            # Extrude state across Time dimension
+            # in_p is (B, X, Y, Z, C). Add T dimension -> (B, X, Y, Z, T, C)
+            b = in_p.shape[0]
+            c = in_p.shape[-1]
+            n_spatial = len(spatial_grid_shape)  # number of spatial dimensions (3 for X,Y,Z)
+            in_p = in_p.unsqueeze(-2).repeat(*([1] * (in_p.ndim - 1)), temporal_dim_size, 1)
+            
+            # Add Temporal Clock - view shape must match spatial dims generically
+            t_coords = torch.linspace(0, 1, temporal_dim_size, device=in_p.device)
+            t_view_shape = [1] * (n_spatial + 1) + [temporal_dim_size, 1]
+            t_coords = t_coords.view(*t_view_shape).expand(b, *spatial_grid_shape, temporal_dim_size, 1)
+            in_p = torch.cat([in_p, t_coords], dim=-1)
+            
         # take apply fno in latent space
         latent_embed = self.latent_embedding(in_p=in_p, 
                                              ada_in=ada_in)
@@ -221,9 +267,18 @@ class GINO(nn.Module):
         # Integrate latent space to output queries
         #latent_embed shape (b, c, n_1, n_2, ..., n_k)
         batch_size = latent_embed.shape[0]
-        # permute to (b, n_1, n_2, ...n_k, c)
-        # then reshape to (b, n_1 * n_2 * ...n_k, out_channels)
-        latent_embed = latent_embed.permute(0, *self.in_coord_dim_reverse_order, 1).reshape(batch_size, -1, self.fno_hidden_channels)
+        
+        if is_4d:
+            # Fold Time into Batch for out_gno processing: (B, C, X, Y, Z, T) -> (B*T, C, X, Y, Z)
+            b, c, dx, dy, dz, dt = latent_embed.shape
+            latent_embed = latent_embed.permute(0, 5, 1, 2, 3, 4).reshape(batch_size * dt, c, dx, dy, dz)
+            # permute to (b*dt, n_1, n_2, ...n_k, c)
+            latent_embed = latent_embed.permute(0, *self.in_coord_dim_reverse_order, 1).reshape(batch_size * dt, -1, self.fno_hidden_channels)
+        else:
+            # permute to (b, n_1, n_2, ...n_k, c)
+            # then reshape to (b, n_1 * n_2 * ...n_k, out_channels)
+            latent_embed = latent_embed.permute(0, *self.in_coord_dim_reverse_order, 1).reshape(batch_size, -1, self.fno_hidden_channels)
+            dt = 1
         
         if self.out_gno_tanh in ['latent_embed', 'both']:
             latent_embed = torch.tanh(latent_embed)
@@ -235,30 +290,35 @@ class GINO(nn.Module):
         if isinstance(output_queries, dict):
             out = {}
             for key, out_p in output_queries.items():
-                out_p = out_p.squeeze(0)
+                out_p = out_p.squeeze(0)  # ensure (N_pts, coord_dim) - unbatched for GNO neighbor search
 
-                sub_output = self.out_gno(y=latent_queries.reshape((-1, latent_queries.shape[-1])), 
+                sub_output = self.out_gno(y=spatial_latent_queries.reshape((-1, spatial_latent_queries.shape[-1])), 
                     x=out_p,
                     f_y=latent_embed,)
                 sub_output = sub_output.permute(0, 2, 1)
 
-                # Project pointwise to out channels
-                #(b, n_in, out_channels)
-                sub_output = self.projection(sub_output).permute(0, 2, 1)  
-
+                # Project pointwise to out channels: (B*T, C, N_pts) -> (B*T, N_pts, C_out)
+                sub_output = self.projection(sub_output).permute(0, 2, 1)
+                if is_4d:
+                    # Reshape back: (B*T, N_pts, C_out) -> (B, N_pts, T*C_out)
+                    _, n_pts, c_out = sub_output.shape
+                    sub_output = sub_output.view(batch_size, dt, n_pts, c_out).permute(0, 2, 1, 3).reshape(batch_size, n_pts, dt * c_out)
                 out[key] = sub_output
         else:
-            output_queries = output_queries.squeeze(0)
+            output_queries = output_queries.squeeze(0)  # ensure (N_pts, coord_dim) - unbatched for GNO neighbor search
 
             # latent queries is of shape (d_1 x d_2 x... d_n x n), reshape to n_out x n
-            out = self.out_gno(y=latent_queries.reshape((-1, latent_queries.shape[-1])), 
+            out = self.out_gno(y=spatial_latent_queries.reshape((-1, spatial_latent_queries.shape[-1])), 
                         x=output_queries,
                         f_y=latent_embed,)
             out = out.permute(0, 2, 1)
 
-            # Project pointwise to out channels
-            #(b, n_in, out_channels)
-            out = self.projection(out).permute(0, 2, 1)  
+            # Project pointwise to out channels: (B*T, C, N_pts) -> (B*T, N_pts, C_out)
+            out = self.projection(out).permute(0, 2, 1)
+            if is_4d:
+                # Reshape back: (B*T, N_pts, C_out) -> (B, N_pts, T*C_out)
+                _, n_pts, c_out = out.shape
+                out = out.view(batch_size, dt, n_pts, c_out).permute(0, 2, 1, 3).reshape(batch_size, n_pts, dt * c_out)
         
         return out
 

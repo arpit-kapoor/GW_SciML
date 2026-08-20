@@ -55,7 +55,14 @@ class DataParallelAdapter(torch.nn.Module):
             input_geom = input_geom[0]
         if output_queries.dim() == 3:  # [B, N_points, coord_dim] -> [N_points, coord_dim]
             output_queries = output_queries[0]
-        if latent_queries.dim() == 5:  # [B, Qx, Qy, Qz, coord_dim] -> [Qx, Qy, Qz, coord_dim]
+        
+        # Latent queries: last dim is always the coordinate/positional dim.
+        # An unbatched 3D spatial grid  is (X,Y,Z, coord_dim)         -> 4 dims, coord_dim = last dim value
+        # An unbatched 4D spacetime grid is (X,Y,Z,T, coord_dim)       -> 5 dims, coord_dim = last dim value
+        # DataParallel adds a leading batch dim making them 5D and 6D respectively.
+        # We detect a fake batch dim by checking ndim == coord_dim + 2 (batched case) vs coord_dim + 1 (unbatched).
+        coord_dim = latent_queries.shape[-1]
+        if latent_queries.dim() == coord_dim + 2:  # has fake leading batch dim
             latent_queries = latent_queries[0]
         
         # Forward into the real model.
@@ -100,7 +107,7 @@ def unwrap_model_for_state_dict(model: torch.nn.Module) -> torch.nn.Module:
     return m
 
 
-def broadcast_static_inputs_for_dp(point_coords, latent_queries, batch_size, coord_dim=None):
+def broadcast_static_inputs_for_dp(point_coords, latent_queries, batch_size, coord_dim=None, output_queries=None, **kwargs):
     """
     Create fake batch dimensions for static inputs to enable DataParallel scattering.
     
@@ -113,6 +120,7 @@ def broadcast_static_inputs_for_dp(point_coords, latent_queries, batch_size, coo
         latent_queries (torch.Tensor): Latent query grid [Qx, Qy, Qz, coord_dim] or similar
         batch_size (int): Size of the batch dimension to create
         coord_dim (int): Optional coordinate dimensionality for validation
+        output_queries (torch.Tensor, optional): Output query coordinates [N_output_points, coord_dim]
         
     Returns:
         tuple: (input_geom_b, latent_queries_b, output_queries_b) with fake batch dimensions
@@ -123,10 +131,16 @@ def broadcast_static_inputs_for_dp(point_coords, latent_queries, batch_size, coo
             f"Point coords have dim {point_coords.shape[-1]}, expected {coord_dim}"
         assert latent_queries.shape[-1] == coord_dim, \
             f"Latent queries have dim {latent_queries.shape[-1]}, expected {coord_dim}"
+        if output_queries is not None:
+            assert output_queries.shape[-1] == coord_dim, \
+                f"Output queries have dim {output_queries.shape[-1]}, expected {coord_dim}"
     
     # Add batch dimension using expand (creates view, no memory copy)
     input_geom_b = point_coords.unsqueeze(0).expand(batch_size, -1, -1)  # [B, N_points, coord_dim]
-    output_queries_b = input_geom_b  # same as input_geom
+    if output_queries is not None:
+        output_queries_b = output_queries.unsqueeze(0).expand(batch_size, -1, -1)  # [B, N_out_points, coord_dim]
+    else:
+        output_queries_b = input_geom_b  # default to input_geom
     
     # For latent queries, preserve all grid dimensions
     latent_queries_b = latent_queries.unsqueeze(0).expand(

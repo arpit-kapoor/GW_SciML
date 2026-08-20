@@ -86,22 +86,26 @@ def define_model_parameters(args):
     """Define GINO architecture parameters based on input configuration."""
     args.coord_dim = 3
     args.n_target_cols = len(args.target_cols)
+    
     # Preserve CLI-supplied --gno-radius; fall back to the hardcoded default.
     if not hasattr(args, 'gno_radius') or args.gno_radius is None:
         args.gno_radius = 0.18
+        
     args.in_gno_out_channels = args.input_window_size * args.n_target_cols
     if args.forcings_required:
-        args.forcings_dim = 4  # Number of forcings features
+        # Include boundary conditions for the output steps (4 features * 20 steps)
+        args.forcings_dim = 4 * args.output_window_size
         args.in_gno_out_channels += args.forcings_dim
+        
     args.in_gno_channel_mlp_layers = [32, 64, 32]
     args.fno_n_layers = 4
-    args.fno_n_modes = (8, 8, 6)
+    args.fno_n_modes = (8, 8, 6, 8)
     args.fno_hidden_channels = 128
     args.lifting_channels = 64
     args.out_gno_channel_mlp_layers = [32, 64, 32]
     args.projection_channel_ratio = 2
-    args.out_channels = args.output_window_size * args.n_target_cols
-    args.latent_query_dims = (16, 16, 8)
+    args.out_channels = args.n_target_cols
+    args.latent_query_dims = (16, 16, 8, args.output_window_size)
     return args
 
 
@@ -209,6 +213,7 @@ if __name__ == "__main__":
         resolution_ratio=args.resolution_ratio,
         min_resolution_ratio=args.min_resolution_ratio,
         sampling_strategy=args.sampling_strategy,
+        train_stride=args.train_stride,
     )
     
     print(f"Dataset sizes - Train: {len(train_ds)}, Val: {len(val_ds)}")

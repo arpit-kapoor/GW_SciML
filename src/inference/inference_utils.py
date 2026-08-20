@@ -52,6 +52,8 @@ def setup_inference_arguments(description, default_base_data_dir, default_result
                        help='Output sequence length')
     parser.add_argument('--batch-size', type=int, default=32,
                        help='Batch size for inference')
+    parser.add_argument('--val-stride', type=int, default=1,
+                       help='Stride for validation sequence generation')
     
     # Resolution parameters for testing at different spatial resolutions
     parser.add_argument('--resolution-ratio', type=float, default=1.0,
@@ -260,13 +262,16 @@ def _roll_buffer(buffer, prev_pred, input_window_size, output_window_size, n_obs
     n_points = buffer.shape[0]
     # Reshape to [N_points, W_in, F] for easy slicing along the time axis
     buf_3d = buffer.reshape(n_points, input_window_size, n_obs_features)
-
-    # Shift: drop the oldest W_out steps, keep steps [W_out:]
-    kept = buf_3d[:, output_window_size:, :]          # [N_points, W_in - W_out, F]
-
-    # Append the prediction as the new trailing W_out steps
     pred_3d = prev_pred.reshape(n_points, output_window_size, n_obs_features)  # [N_points, W_out, F]
-    updated = np.concatenate([kept, pred_3d], axis=1)  # [N_points, W_in, F]
+
+    if output_window_size >= input_window_size:
+        # If prediction covers the entire new input window, just take the last W_in steps
+        updated = pred_3d[:, -input_window_size:, :]
+    else:
+        # Shift: drop the oldest W_out steps, keep steps [W_out:]
+        kept = buf_3d[:, output_window_size:, :]          # [N_points, W_in - W_out, F]
+        # Append the prediction as the new trailing W_out steps
+        updated = np.concatenate([kept, pred_3d], axis=1)  # [N_points, W_in, F]
 
     return updated.reshape(n_points, input_window_size * n_obs_features)
 
@@ -433,10 +438,14 @@ def generate_rolling_predictions(model, dataset, args, dataset_name='dataset',
                         pass # 'mass_concentration' not in target_cols
 
                 # ---- Update rolling buffer ----------------------------------
-                prev_pred_core = core_output[0]   # [N_core, W_out * n_obs_feat]
+                # Unify the autoregressive rollout step with the dataset stride.
+                # If the dataset advances by 1 timestep, we only roll 1 predicted timestep into the buffer.
+                rollout_step = min(getattr(dataset, 'stride', W_out), W_out)
+                
+                prev_pred_core = core_output[0, :, :rollout_step * n_obs_feat]   # [N_core, rollout_step * n_obs_feat]
                 rolling_buffer = _roll_buffer(
                     rolling_buffer, prev_pred_core,
-                    W_in, W_out, n_obs_feat
+                    W_in, rollout_step, n_obs_feat
                 )
 
                 # ---- Accumulate results ------------------------------------

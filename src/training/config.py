@@ -61,6 +61,8 @@ def setup_training_arguments(
                        help='Number of time steps in each input sequence')
     parser.add_argument('--output-window-size', type=int, default=10,
                        help='Number of time steps in each output sequence')
+    parser.add_argument('--train-stride', type=int, default=1,
+                       help='Stride for generating sequences during training')
     
     # Model parameters
     parser.add_argument('--learning-rate', type=float, default=5e-4,

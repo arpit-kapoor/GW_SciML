@@ -31,7 +31,8 @@ class GWPatchDatasetMultiCol(Dataset):
         forcings_required=False,
         resolution_ratio=1.0,
         min_resolution_ratio=0.20,
-        sampling_strategy='dynamic'
+        sampling_strategy='dynamic',
+        stride=1
     ):
         """
         Initialize the GWPatchDatasetMultiCol.
@@ -64,7 +65,20 @@ class GWPatchDatasetMultiCol(Dataset):
         self.input_window_size = input_window_size
         self.output_window_size = output_window_size
         self.target_col_indices = target_col_indices
+        self.stride = stride
 
+        # Load global time values (physical time in days for each timestep)
+        time_values_path = os.path.join(data_path, 'time_values.npy')
+        if os.path.exists(time_values_path):
+            self.time_values = torch.from_numpy(
+                np.load(time_values_path).astype(np.float32)
+            )  # (total_timesteps,)
+            print(f"Loaded time_values.npy: {self.time_values.shape[0]} timesteps, "
+                  f"range [{self.time_values[0]:.2f}, {self.time_values[-1]:.2f}] days")
+        else:
+            # Fallback: use integer indices as time values
+            print(f"Warning: time_values.npy not found at {time_values_path}, using integer indices")
+            self.time_values = None  # Will be set after loading patch data
 
         # Load and process patch data
         patch_data = self.load_patch_data(
@@ -77,6 +91,17 @@ class GWPatchDatasetMultiCol(Dataset):
             sampling_strategy=sampling_strategy
         )
         
+        # Set fallback time values if not loaded
+        if self.time_values is None and len(patch_data) > 0:
+            n_total_ts = patch_data[0]['core_obs'].shape[0]
+            # Reconstruct total timesteps: for train, we used [:train_idx]; for val, [train_idx:]
+            # We need the global index, so estimate total from val_ratio
+            if dataset == 'train':
+                total_ts = int(n_total_ts / (1 - val_ratio))
+            else:
+                total_ts = int(n_total_ts / val_ratio)
+            self.time_values = torch.arange(total_ts, dtype=torch.float32)
+
         # Compute weights based on temporal variances across all patches
         patch_data = self.compute_weights(patch_data)
         
@@ -100,7 +125,11 @@ class GWPatchDatasetMultiCol(Dataset):
         output_window_size=10
     ):
         """
-        Create input/output sequence data from patch data with multi-column concatenation.
+        Create input/output sequence data from patch data.
+
+        For the 4D space-time FNO architecture, sequences are stored with time and
+        variable dimensions kept separate (not flattened). The collate function
+        handles assembly of paired forcings and 4D coordinate construction.
 
         Args:
             patch_data (list): List of patch data dictionaries.
@@ -110,8 +139,8 @@ class GWPatchDatasetMultiCol(Dataset):
         Returns:
             tuple: (coords, input_sequence, output_sequence)
                 - coords: List of coordinate dictionaries for each sequence.
-                - input_sequence: List of input sequence dictionaries with concatenated columns.
-                - output_sequence: List of output sequence dictionaries with concatenated columns.
+                - input_sequence: List of input sequence dictionaries.
+                - output_sequence: List of output sequence dictionaries.
         """
         coords = []
         input_sequence = []
@@ -120,50 +149,66 @@ class GWPatchDatasetMultiCol(Dataset):
         for patch in patch_data:
             core_obs = patch['core_obs']  # Shape: [time_steps, n_points, n_target_cols]
             ghost_obs = patch['ghost_obs']  # Shape: [time_steps, n_points, n_target_cols]
+            total_timesteps = len(core_obs)
 
             # Generate sequences for this patch
-            for i in range(0, len(core_obs) - (input_window_size + output_window_size) + 1):
+            for i in range(0, total_timesteps - (input_window_size + output_window_size) + 1, self.stride):
+                # Compute the global timestep index for this window.
+                # For train: data is patch_obs[:train_idx], so global index = i
+                # For val: data is patch_obs[train_idx:], so global index = train_idx + i
+                global_start_idx = patch.get('global_start_idx', 0) + i
+
                 coords.append({
                     'patch_id': patch['patch_id'],
                     'core_coords': patch['core_coords'],
                     'ghost_coords': patch['ghost_coords'],
-                    'weights': patch['weights']  # [n_points]
+                    'weights': patch['weights'],  # [n_core_points]
                 })
                 
-                # Extract sequences: [window_size, n_points, n_target_cols]
-                core_in_seq = core_obs[i:i + input_window_size]
-                ghost_in_seq = ghost_obs[i:i + input_window_size]
-                core_out_seq = core_obs[i + input_window_size:i + input_window_size + output_window_size]
-                ghost_out_seq = ghost_obs[i + input_window_size:i + input_window_size + output_window_size]
+                # Extract observation sequences: [window_size, n_points, n_target_cols]
+                core_in_obs = core_obs[i:i + input_window_size]                                          # (T_in, N, C_obs)
+                ghost_in_obs = ghost_obs[i:i + input_window_size]
+                core_out_obs = core_obs[i + input_window_size:i + input_window_size + output_window_size]  # (T_out, N, C_obs)
+                ghost_out_obs = ghost_obs[i + input_window_size:i + input_window_size + output_window_size]
 
-                
-                # Reshape and concatenate: [n_points, window_size * n_target_cols]
-                # This flattens across time and variable dimensions
-                core_in = self._concat_sequence(core_in_seq)
-                ghost_in = self._concat_sequence(ghost_in_seq)
-                core_out = self._concat_sequence(core_out_seq)
-                ghost_out = self._concat_sequence(ghost_out_seq)
+                # Permute to [N, T, C] for easier handling in collate
+                core_in_obs = core_in_obs.permute(1, 0, 2)    # (N, T_in, C_obs)
+                ghost_in_obs = ghost_in_obs.permute(1, 0, 2)
+                core_out_obs = core_out_obs.permute(1, 0, 2)  # (N, T_out, C_obs)
+                ghost_out_obs = ghost_out_obs.permute(1, 0, 2)
 
+                input_dict = {
+                    'core_in_obs': core_in_obs,
+                    'ghost_in_obs': ghost_in_obs,
+                }
+                output_dict = {
+                    'core_out': core_out_obs,
+                    'ghost_out': ghost_out_obs,
+                }
 
-                # Forcings sequences can be extracted here if required
+                # Extract forcings sequences if required
                 if self.forcings_required:
-                    core_forcings_seq = patch['core_forcings'][i + input_window_size:i + input_window_size + output_window_size]
-                    ghost_forcings_seq = patch['ghost_forcings'][i + input_window_size:i + input_window_size + output_window_size]
-                    core_forcings = self._concat_sequence(core_forcings_seq)
-                    ghost_forcings = self._concat_sequence(ghost_forcings_seq)
+                    # Input window forcings: (T_in, N, C_forc)
+                    core_in_forc = patch['core_forcings'][i:i + input_window_size].permute(1, 0, 2)
+                    ghost_in_forc = patch['ghost_forcings'][i:i + input_window_size].permute(1, 0, 2)
+                    # Output window forcings (future, paired by index): (T_out, N, C_forc)
+                    core_out_forc = patch['core_forcings'][i + input_window_size:i + input_window_size + output_window_size].permute(1, 0, 2)
+                    ghost_out_forc = patch['ghost_forcings'][i + input_window_size:i + input_window_size + output_window_size].permute(1, 0, 2)
 
-                    # Add forcings to input sequences if needed
-                    core_in = torch.cat([core_in, core_forcings], dim=-1)
-                    ghost_in = torch.cat([ghost_in, ghost_forcings], dim=-1)
-                
-                input_sequence.append({
-                    'core_in': core_in,
-                    'ghost_in': ghost_in
-                })
-                output_sequence.append({
-                    'core_out': core_out,
-                    'ghost_out': ghost_out
-                })
+                    input_dict['core_in_forcings'] = core_in_forc      # (N, T_in, C_forc)
+                    input_dict['ghost_in_forcings'] = ghost_in_forc
+                    input_dict['core_out_forcings'] = core_out_forc    # (N, T_out, C_forc)
+                    input_dict['ghost_out_forcings'] = ghost_out_forc
+
+                # Store time indices for this window (global indices into time_values)
+                input_dict['time_indices'] = torch.arange(
+                    global_start_idx,
+                    global_start_idx + input_window_size + output_window_size,
+                    dtype=torch.long
+                )  # (T_in + T_out,)
+
+                input_sequence.append(input_dict)
+                output_sequence.append(output_dict)
 
         return coords, input_sequence, output_sequence
     
@@ -257,8 +302,9 @@ class GWPatchDatasetMultiCol(Dataset):
         patch_data = []
         ratio_eps = 1e-12
 
-        # Get list of valid patch directories
-        patch_dirs = [d for d in sorted(os.listdir(data_path)) if not d.startswith('.')]
+        # Get list of valid patch directories (ignore files like time_values.npy)
+        patch_dirs = [d for d in sorted(os.listdir(data_path)) 
+                      if not d.startswith('.') and os.path.isdir(os.path.join(data_path, d))]
 
         # =========================================================================
         # 1. Pre-calculate dynamic resolution ratios per patch based on variability
@@ -444,7 +490,8 @@ class GWPatchDatasetMultiCol(Dataset):
                     'ghost_obs': ghost_obs[:train_idx],
                     'temporal_variances': temporal_variances,  # [n_points]
                     'core_forcings': core_forcings[:train_idx],
-                    'ghost_forcings': ghost_forcings[:train_idx]
+                    'ghost_forcings': ghost_forcings[:train_idx],
+                    'global_start_idx': 0,  # train data starts at global index 0
                 })
             else:
                 patch_data.append({
@@ -455,7 +502,8 @@ class GWPatchDatasetMultiCol(Dataset):
                     'ghost_obs': ghost_obs[train_idx:],
                     'temporal_variances': temporal_variances,  # [n_points] - same for val
                     'core_forcings': core_forcings[train_idx:],
-                    'ghost_forcings': ghost_forcings[train_idx:]
+                    'ghost_forcings': ghost_forcings[train_idx:],
+                    'global_start_idx': train_idx,  # val data starts at global index train_idx
                 })
 
         return patch_data

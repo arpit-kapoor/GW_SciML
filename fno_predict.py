@@ -39,6 +39,10 @@ from src.inference.metrics import (
     save_metrics,
     denormalize_observations,
 )
+from src.training.parallel_utils import unwrap_dp, broadcast_static_inputs_for_dp
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from src.data.batch_sampler import PatchBatchSampler
 
 
 def add_fno_model_args(parser):
@@ -203,10 +207,16 @@ def main():
         resolution_ratio=args.resolution_ratio,
         min_resolution_ratio=args.min_resolution_ratio,
         sampling_strategy=args.sampling_strategy,
+        val_stride=getattr(args, 'val_stride', 1),
+        val_only=args.val_only,
     )
     
-    print(f"Train dataset length: {len(train_ds)}")
+    if train_ds is not None:
+        print(f"Train dataset length: {len(train_ds)}")
     print(f"Val dataset length: {len(val_ds)}")
+    
+    # Store time_values on args for make_collate_fn
+    args._time_values = getattr(train_ds, 'time_values', None) if train_ds is not None else getattr(val_ds, 'time_values', None)
     
     # Create model
     model = create_model_from_checkpoint(
@@ -223,15 +233,12 @@ def main():
     # Generate predictions (standard teacher-forcing OR rolling autoregressive mode)
     if args.rolling_sequence:
         print("\n" + "="*60)
-        print("EVALUATION MODE: Rolling Sequence (Initial-Value Problem)")
-        print("  - First window  : ground-truth inputs")
-        print("  - Later windows : model outputs rolled into input buffer")
-        print("  - Ghost points  : always use ground-truth (boundary cond.)")
+        print("EVALUATION MODE: Rolling Sequence (Initial-Value Problem) for 4D FNO")
         print("="*60)
-        _predict_fn = functools.partial(generate_rolling_predictions, obs_transform=obs_transform)
+        _predict_fn = functools.partial(_fno_4d_rolling_predict, obs_transform=obs_transform)
     else:
-        print("\nEVALUATION MODE: Standard (Teacher Forcing)")
-        _predict_fn = generate_predictions
+        print("\nEVALUATION MODE: Standard (Teacher Forcing) for 4D FNO")
+        _predict_fn = _fno_4d_predict
 
     if args.val_only:
         print("\nDataset scope: VAL ONLY (--val-only flag set, skipping train set)")
@@ -346,6 +353,203 @@ def main():
         print("Dataset scope: Val only")
     print("="*60)
 
+
+def _fno_4d_predict(model, dataset, args, dataset_name, collate_fn):
+    """Standard 4D prediction loop without rolling."""
+    print(f"\nGenerating predictions for {dataset_name} dataset...")
+    sampler = PatchBatchSampler(dataset, batch_size=args.batch_size, shuffle_within_batches=False, shuffle_patches=False)
+    loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_fn)
+    
+    all_predictions, all_targets, all_coords = {}, {}, {}
+    all_patch_metadata = []
+    
+    model.eval()
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(loader, desc=f"Processing {dataset_name}")):
+            input_coords = batch['input_coords'].to(args.device).float()
+            output_coords = batch['output_coords'].to(args.device).float()
+            latent_queries = batch['latent_queries'].to(args.device).float()
+            x = batch['x'].to(args.device).float()
+            
+            batch_size = x.shape[0]
+            if not model.training:
+                model = unwrap_dp(model)
+                
+            input_geom_b, latent_queries_b, output_queries_b = broadcast_static_inputs_for_dp(
+                input_coords, latent_queries, batch_size, output_queries=output_coords
+            )
+            
+            outputs = model(input_geom_b, latent_queries_b, x, output_queries_b)
+            
+            # Extract core points
+            y = batch['y'].to(args.device).float()
+            core_len = batch['core_len']
+            T_out = batch['T_out']
+            C_obs = args.n_target_cols
+            
+            outputs_reshaped = reshape_multi_col_predictions(outputs, T_out, C_obs)
+            y_reshaped = reshape_multi_col_predictions(y, T_out, C_obs)
+            
+            core_outputs = outputs_reshaped[:, :core_len, :, :].cpu().numpy()
+            core_targets = y_reshaped[:, :core_len, :, :].cpu().numpy()
+            core_coords_sp = batch['spatial_coords'][:core_len].unsqueeze(0).expand(batch_size, -1, -1).numpy()
+            
+            # Re-flatten for legacy compatibility in metrics and plotting
+            B = batch_size
+            core_outputs_flat = core_outputs.reshape(B, core_len, T_out * C_obs)
+            core_targets_flat = core_targets.reshape(B, core_len, T_out * C_obs)
+            
+            patch_id = batch['patch_id']
+            if patch_id not in all_predictions:
+                all_predictions[patch_id] = []
+                all_targets[patch_id] = []
+                all_coords[patch_id] = []
+            
+            all_predictions[patch_id].append(core_outputs_flat)
+            all_targets[patch_id].append(core_targets_flat)
+            all_coords[patch_id].append(core_coords_sp)
+            
+            for i in range(batch_size):
+                all_patch_metadata.append({
+                    'batch_idx': batch_idx, 'sample_idx': i, 'patch_id': patch_id,
+                    'dataset': dataset_name, 'core_len': core_len
+                })
+                
+    for patch_id in all_predictions.keys():
+        all_predictions[patch_id] = np.concatenate(all_predictions[patch_id], axis=0)
+        all_targets[patch_id] = np.concatenate(all_targets[patch_id], axis=0)
+        all_coords[patch_id] = np.concatenate(all_coords[patch_id], axis=0)
+        
+    return {
+        'predictions': np.concatenate(list(all_predictions.values()), axis=1),
+        'targets': np.concatenate(list(all_targets.values()), axis=1),
+        'coords': np.concatenate(list(all_coords.values()), axis=1),
+        'metadata': all_patch_metadata
+    }
+
+def _fno_4d_rolling_predict(model, dataset, args, dataset_name, collate_fn, obs_transform=None):
+    """4D autoregressive prediction."""
+    print(f"\nGenerating ROLLING predictions for {dataset_name} dataset...")
+    
+    W_in = args.input_window_size
+    W_out = args.output_window_size
+    n_target_cols = len(getattr(args, 'target_cols', ['head']))
+    
+    all_patch_ids = dataset.get_all_patch_ids()
+    unique_patches = sorted(set(all_patch_ids.tolist()))
+    
+    patch_index_map = {pid: [] for pid in unique_patches}
+    for idx, pid in enumerate(all_patch_ids.tolist()):
+        patch_index_map[pid].append(idx)
+        
+    all_predictions, all_targets, all_coords = {}, {}, {}
+    all_patch_metadata = []
+    
+    model.eval()
+    if not model.training:
+        model = unwrap_dp(model)
+        
+    with torch.no_grad():
+        for pid in tqdm(unique_patches, desc=f"Rolling {dataset_name}"):
+            indices = patch_index_map[pid]
+            
+            rolling_buffer = None  # [N_core, T_in, C_obs]
+            
+            all_predictions[pid] = []
+            all_targets[pid] = []
+            all_coords[pid] = []
+            
+            for step_idx, ds_idx in enumerate(indices):
+                sample = dataset[ds_idx]
+                batch = collate_fn([sample])
+                
+                core_len = batch['core_len']
+                n_pts = batch['n_pts']
+                T_in = batch['T_in']
+                
+                # batch['x'] is (1, N_pts * T_in, C_in)
+                x_full = batch['x'].clone()
+                C_in = x_full.shape[-1]
+                
+                # Reshape to (N_pts, T_in, C_in)
+                x_3d = x_full[0].reshape(n_pts, T_in, C_in)
+                
+                if step_idx == 0:
+                    # Seed buffer from ground-truth core observations
+                    rolling_buffer = x_3d[:core_len, :, :n_target_cols].cpu().numpy()
+                else:
+                    # Replace obs portion of core points with rolling buffer
+                    x_3d[:core_len, :, :n_target_cols] = torch.from_numpy(rolling_buffer)
+                    
+                # Reshape back to flat for model
+                batch['x'] = x_3d.reshape(n_pts * T_in, C_in).unsqueeze(0)
+                
+                # Forward pass
+                input_coords = batch['input_coords'].to(args.device).float()
+                output_coords = batch['output_coords'].to(args.device).float()
+                latent_queries = batch['latent_queries'].to(args.device).float()
+                x = batch['x'].to(args.device).float()
+                
+                input_geom_b, latent_queries_b, output_queries_b = broadcast_static_inputs_for_dp(
+                    input_coords, latent_queries, 1, output_queries=output_coords
+                )
+                
+                outputs = model(input_geom_b, latent_queries_b, x, output_queries_b)
+                
+                y = batch['y'].to(args.device).float()
+                outputs_reshaped = reshape_multi_col_predictions(outputs, W_out, n_target_cols)
+                y_reshaped = reshape_multi_col_predictions(y, W_out, n_target_cols)
+                
+                core_outputs = outputs_reshaped[:, :core_len, :, :].cpu().numpy()  # (1, N_core, T_out, C_obs)
+                core_targets = y_reshaped[:, :core_len, :, :].cpu().numpy()
+                core_coords_sp = batch['spatial_coords'][:core_len].unsqueeze(0).numpy()
+                
+                # Clamp mass_concentration
+                if obs_transform is not None and hasattr(args, 'target_cols') and hasattr(args, 'target_col_indices'):
+                    try:
+                        mass_idx = args.target_cols.index('mass_concentration')
+                        global_idx = args.target_col_indices[mass_idx]
+                        mean_mass = float(obs_transform.mean[global_idx])
+                        std_mass = float(obs_transform.std[global_idx])
+                        norm_threshold = (0.0 - mean_mass) / std_mass
+                        core_outputs[0, :, :, mass_idx] = np.maximum(core_outputs[0, :, :, mass_idx], norm_threshold)
+                    except ValueError:
+                        pass
+                        
+                # Update rolling buffer
+                rollout_step = min(getattr(dataset, 'stride', W_out), W_out)
+                prev_pred = core_outputs[0, :, :rollout_step, :]  # (N_core, rollout_step, C_obs)
+                
+                if rollout_step >= W_in:
+                    rolling_buffer = prev_pred[:, -W_in:, :]
+                else:
+                    kept = rolling_buffer[:, rollout_step:, :]
+                    rolling_buffer = np.concatenate([kept, prev_pred], axis=1)
+                
+                # Store
+                core_outputs_flat = core_outputs.reshape(1, core_len, W_out * n_target_cols)
+                core_targets_flat = core_targets.reshape(1, core_len, W_out * n_target_cols)
+                
+                all_predictions[pid].append(core_outputs_flat)
+                all_targets[pid].append(core_targets_flat)
+                all_coords[pid].append(core_coords_sp)
+                
+                all_patch_metadata.append({
+                    'batch_idx': step_idx, 'sample_idx': 0, 'patch_id': pid,
+                    'dataset': dataset_name, 'core_len': core_len
+                })
+                
+    for patch_id in all_predictions.keys():
+        all_predictions[patch_id] = np.concatenate(all_predictions[patch_id], axis=0)
+        all_targets[patch_id] = np.concatenate(all_targets[patch_id], axis=0)
+        all_coords[patch_id] = np.concatenate(all_coords[patch_id], axis=0)
+        
+    return {
+        'predictions': np.concatenate(list(all_predictions.values()), axis=1),
+        'targets': np.concatenate(list(all_targets.values()), axis=1),
+        'coords': np.concatenate(list(all_coords.values()), axis=1),
+        'metadata': all_patch_metadata
+    }
 
 if __name__ == "__main__":
     main()

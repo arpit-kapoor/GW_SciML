@@ -534,6 +534,10 @@ def create_per_column_visualizations(results_dict, target_cols,
     
     # Process both train and val datasets
     for dataset_name in ['train', 'val']:
+        if dataset_name not in results_dict or results_dict[dataset_name] is None:
+            print(f"Skipping visualizations for {dataset_name} (no data available)")
+            continue
+            
         print(f"\n{'='*60}")
         print(f"Creating visualizations for {dataset_name} dataset...")
         print(f"{'='*60}")

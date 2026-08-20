@@ -1,5 +1,4 @@
 #!/bin/bash
-#PBS -N FNO_Predict
 #PBS -P yl75
 #PBS -l storage=scratch/yl75
 #PBS -q gpuvolta
@@ -8,9 +7,7 @@
 #PBS -l mem=95GB
 #PBS -l jobfs=100GB
 #PBS -l walltime=6:00:00
-#PBS -o /dev/null
-#PBS -e /dev/null
-#PBS -m abe
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HPC_DIR="${PBS_O_WORKDIR:-$SCRIPT_DIR}"

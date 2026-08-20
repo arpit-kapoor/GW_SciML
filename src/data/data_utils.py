@@ -144,20 +144,28 @@ def create_patch_datasets(dataset_class, patch_data_dir, coord_transform, obs_tr
             - Any other dataset-specific parameters
         
     Returns:
-        tuple: (train_dataset, validation_dataset)
+         tuple: (train_dataset, validation_dataset)
     """
-    # Create training dataset
-    train_ds = dataset_class(
-        data_path=patch_data_dir,
-        dataset='train', 
-        coord_transform=coord_transform, 
-        obs_transform=obs_transform,
-        input_window_size=kwargs.get('input_window_size', 10),
-        output_window_size=kwargs.get('output_window_size', 10),
-        target_col_indices=kwargs.get('target_col_indices', None),
-        **{k: v for k, v in kwargs.items() if k not in ['input_window_size', 'output_window_size', 'target_col_indices']}
-    )
+    train_stride = kwargs.get('train_stride', 1)
+    val_only = kwargs.get('val_only', False)
     
+    if not val_only:
+        # Create training dataset
+        train_ds = dataset_class(
+            data_path=patch_data_dir,
+            dataset='train', 
+            coord_transform=coord_transform, 
+            obs_transform=obs_transform,
+            input_window_size=kwargs.get('input_window_size', 10),
+            output_window_size=kwargs.get('output_window_size', 10),
+            target_col_indices=kwargs.get('target_col_indices', None),
+            stride=train_stride,
+            **{k: v for k, v in kwargs.items() if k not in ['input_window_size', 'output_window_size', 'target_col_indices', 'train_stride', 'val_stride', 'val_only']}
+        )
+    else:
+        train_ds = None
+    
+    val_stride = kwargs.get('val_stride', 1)
     # Create validation dataset
     val_ds = dataset_class(
         data_path=patch_data_dir,
@@ -167,7 +175,8 @@ def create_patch_datasets(dataset_class, patch_data_dir, coord_transform, obs_tr
         input_window_size=kwargs.get('input_window_size', 10),
         output_window_size=kwargs.get('output_window_size', 10),
         target_col_indices=kwargs.get('target_col_indices', None),
-        **{k: v for k, v in kwargs.items() if k not in ['input_window_size', 'output_window_size', 'target_col_indices']}
+        stride=val_stride,
+        **{k: v for k, v in kwargs.items() if k not in ['input_window_size', 'output_window_size', 'target_col_indices', 'train_stride', 'val_stride', 'val_only']}
     )
 
     return train_ds, val_ds
@@ -175,115 +184,197 @@ def create_patch_datasets(dataset_class, patch_data_dir, coord_transform, obs_tr
 
 def make_collate_fn(args, coord_dim=3):
     """
-    Create a collate function that batches samples from the same patch.
+    Create a collate function for the 4D space-time FNO architecture.
 
     The sampler ensures a batch contains indices from a single `patch_id`.
-    We build one point cloud per batch (core+ghost), a latent grid over its
-    bounding box, and then stack input/output sequences along the batch dim.
-    
-    This is generic and works for any model that uses patch-based batching
-    with core and ghost points.
-    
+    This collate function:
+    1. Constructs 4D (x, y, z, t) coordinates from spatial coords + time values
+    2. Assembles input features: [obs, current_forcings, future_forcings] = 10 channels
+    3. Builds the 4D latent query grid (Nx, Ny, Nz, Nt)
+    4. Provides separate input and output coordinate tensors
+
     Args:
-        args (argparse.Namespace): Argument namespace containing device and latent grid dimensions
-        coord_dim (int): Coordinate dimensionality (default: 3 for 3D)
-        
+        args (argparse.Namespace): Argument namespace containing device, latent grid dims,
+            input/output window sizes, and dataset reference for time_values
+        coord_dim (int): Spatial coordinate dimensionality (default: 3 for 3D)
+
     Returns:
         function: Collate function for DataLoader
     """
     def collate_fn(batch_samples):
         """
-        Collate function that combines samples into a batch.
-        
+        Collate function that combines samples into a batch for 4D FNO.
+
         Args:
             batch_samples (list): List of sample dictionaries from the same patch
-            
+
         Returns:
-            dict: Batch dictionary with combined point cloud and sequences
+            dict: Batch dictionary with 4D coordinates, paired features, and targets
         """
         # All samples in the batch come from the same patch (by sampler design)
         core_coords = batch_samples[0]['core_coords']
         ghost_coords = batch_samples[0]['ghost_coords']
-        patch_id = batch_samples[0]['patch_id']  # Extract patch ID from first sample
+        patch_id = batch_samples[0]['patch_id']
 
-        # Single point cloud per batch: [N_core+N_ghost, coord_dim]
-        # Concatenate core and ghost points to form complete spatial domain
-        point_coords = torch.concat([core_coords, ghost_coords], dim=0).float()
+        # Single spatial point cloud per batch: [N_pts, 3]
+        spatial_coords = torch.cat([core_coords, ghost_coords], dim=0).float()
+        n_pts = spatial_coords.shape[0]
 
-        # Create latent queries grid over the per-batch bounding box
-        # This provides a regular grid for the FNO component
-        coords_min = torch.min(point_coords, dim=0).values
-        coords_max = torch.max(point_coords, dim=0).values
+        T_in = args.input_window_size
+        T_out = args.output_window_size
+
+        # --- Retrieve time values for this window ---
+        # time_indices: (T_in + T_out,) — global indices into the dataset's time_values
+        time_indices = batch_samples[0]['time_indices']  # same for all samples in batch
+        time_values = getattr(args, '_time_values', None)
+
+        if time_values is not None:
+            # Clamp indices to valid range (safety)
+            time_indices_clamped = time_indices.clamp(0, len(time_values) - 1)
+            window_times = time_values[time_indices_clamped].float()  # (T_in + T_out,)
+        else:
+            # Fallback: use indices directly
+            window_times = time_indices.float()
+
+        # Normalize time to [0, 1] within this window
+        t_min = window_times.min()
+        t_max = window_times.max()
+        t_range = t_max - t_min
+        if t_range > 0:
+            time_norm = (window_times - t_min) / t_range  # (T_in + T_out,)
+        else:
+            time_norm = torch.linspace(0, 1, T_in + T_out)
+
+        input_time_norm = time_norm[:T_in]    # (T_in,)
+        output_time_norm = time_norm[T_in:]   # (T_out,)
+
+        # --- Build 4D coordinates ---
+        # Input coords: tile spatial coords across T_in time steps → (N_pts × T_in, 4)
+        # For each time step t: [x_1,y_1,z_1,t; x_2,y_2,z_2,t; ...]
+        spatial_tiled_in = spatial_coords.unsqueeze(1).expand(-1, T_in, -1)     # (N_pts, T_in, 3)
+        time_tiled_in = input_time_norm.unsqueeze(0).expand(n_pts, -1).unsqueeze(-1)  # (N_pts, T_in, 1)
+        input_coords_4d = torch.cat([spatial_tiled_in, time_tiled_in], dim=-1)  # (N_pts, T_in, 4)
+        input_coords_4d = input_coords_4d.reshape(n_pts * T_in, 4)              # (N_pts×T_in, 4)
+
+        # Output coords: tile spatial coords across T_out time steps → (N_pts × T_out, 4)
+        spatial_tiled_out = spatial_coords.unsqueeze(1).expand(-1, T_out, -1)
+        time_tiled_out = output_time_norm.unsqueeze(0).expand(n_pts, -1).unsqueeze(-1)
+        output_coords_4d = torch.cat([spatial_tiled_out, time_tiled_out], dim=-1)
+        output_coords_4d = output_coords_4d.reshape(n_pts * T_out, 4)
+
+        # --- Build 4D latent query grid ---
+        coords_min = torch.min(spatial_coords, dim=0).values
+        coords_max = torch.max(spatial_coords, dim=0).values
         latent_query_arr = [
             torch.linspace(coords_min[i], coords_max[i], args.latent_query_dims[i], device=args.device)
             for i in range(coord_dim)
         ]
-        # Create meshgrid and stack to get [Qx, Qy, Qz, coord_dim] tensor
-        latent_queries = torch.stack(torch.meshgrid(*latent_query_arr, indexing='ij'), dim=-1)
+        # Temporal grid dimension: use full normalized time range [0, 1]
+        n_t_grid = args.latent_query_dims[coord_dim]  # e.g., 10
+        latent_query_arr.append(torch.linspace(0, 1, n_t_grid, device=args.device))
 
-        # Build batched sequences: concat along points (dim=0), batch along dim=0
+        # Create meshgrid → (Nx, Ny, Nz, Nt, 4)
+        latent_queries = torch.stack(
+            torch.meshgrid(*latent_query_arr, indexing='ij'), dim=-1
+        )
+
+        # --- Assemble input features ---
+        # For each sample, concat core+ghost, then assemble [obs, cur_forcings, fut_forcings]
         x_list, y_list = [], []
         for sample in batch_samples:
-            # Combine core and ghost inputs/outputs for each sample
-            # Note: sequences are already concatenated across target columns in the dataset
-            sample_input = torch.concat([sample['core_in'], sample['ghost_in']], dim=0).float().unsqueeze(0)
-            sample_output = torch.concat([sample['core_out'], sample['ghost_out']], dim=0).float().unsqueeze(0)
-            x_list.append(sample_input)
-            y_list.append(sample_output)
+            n_core = sample['core_in_obs'].shape[0]
+            n_ghost = sample['ghost_in_obs'].shape[0]
 
-        # Stack all sequences into batch tensors
-        x = torch.cat(x_list, dim=0)  # [B, N_points, input_channels]
-        y = torch.cat(y_list, dim=0)  # [B, N_points, output_channels]
+            # Observations: (N_pts, T_in, C_obs)
+            in_obs = torch.cat([sample['core_in_obs'], sample['ghost_in_obs']], dim=0).float()
 
-        # Extract weights (same for all samples in the batch since they're from the same patch)
-        weights = batch_samples[0]['weights']  # [N_points]
+            if hasattr(args, 'forcings_required') and args.forcings_required:
+                # Current forcings: (N_pts, T_in, C_forc)
+                in_forc = torch.cat([sample['core_in_forcings'], sample['ghost_in_forcings']], dim=0).float()
+                # Future forcings (paired by index): (N_pts, T_out, C_forc)
+                out_forc = torch.cat([sample['core_out_forcings'], sample['ghost_out_forcings']], dim=0).float()
+                # Assemble: [obs, cur_forcings, fut_forcings] → (N_pts, T_in, C_obs + C_forc + C_forc)
+                sample_x = torch.cat([in_obs, in_forc, out_forc], dim=-1)  # (N_pts, T_in, 10)
+            else:
+                sample_x = in_obs  # (N_pts, T_in, C_obs)
+
+            # Reshape to (N_pts × T_in, C_in) and add batch dim
+            C_in = sample_x.shape[-1]
+            sample_x = sample_x.reshape((n_core + n_ghost) * T_in, C_in)  # (N_pts×T_in, C_in)
+            x_list.append(sample_x.unsqueeze(0))
+
+            # Output targets: (N_pts, T_out, C_obs) → (N_pts × T_out, C_obs)
+            out_obs = torch.cat([sample['core_out'], sample['ghost_out']], dim=0).float()
+            C_obs = out_obs.shape[-1]
+            sample_y = out_obs.reshape((n_core + n_ghost) * T_out, C_obs)
+            y_list.append(sample_y.unsqueeze(0))
+
+        x = torch.cat(x_list, dim=0)  # [B, N_pts × T_in, C_in]
+        y = torch.cat(y_list, dim=0)  # [B, N_pts × T_out, C_obs]
+
+        # Weights: tile across time steps for the output
+        weights = batch_samples[0]['weights']
         if not isinstance(weights, torch.Tensor):
             weights = torch.from_numpy(weights)
         weights = weights.float()
+        # Tile weights across T_out time steps: (N_core,) → (N_core × T_out,)
+        core_len = len(core_coords)
+        weights_tiled = weights.unsqueeze(1).expand(-1, T_out).reshape(-1)  # (N_core × T_out,)
 
-        # Return batch dictionary
         batch = {
-            'patch_id': patch_id,             # Patch identifier for tracking results
-            'point_coords': point_coords,      # [N_points, coord_dim]
-            'latent_queries': latent_queries,  # [Qx, Qy, Qz, coord_dim]
-            'x': x,                           # [B, N_points, input_channels]
-            'y': y,                           # [B, N_points, output_channels]
-            'core_len': len(core_coords),     # Number of core points (for loss masking)
-            'weights': weights,               # [N_points] - pre-computed variance-aware weights
+            'patch_id': patch_id,
+            'input_coords': input_coords_4d,        # [N_pts × T_in, 4]
+            'output_coords': output_coords_4d,       # [N_pts × T_out, 4]
+            'latent_queries': latent_queries,         # [Nx, Ny, Nz, Nt, 4]
+            'x': x,                                   # [B, N_pts × T_in, C_in]
+            'y': y,                                   # [B, N_pts × T_out, C_obs]
+            'core_len': core_len,                     # number of core spatial points
+            'n_pts': n_pts,                           # total spatial points (core + ghost)
+            'T_in': T_in,
+            'T_out': T_out,
+            'weights': weights_tiled,                 # [N_core × T_out]
+            'spatial_coords': spatial_coords,         # [N_pts, 3] for reference
         }
         return batch
-    
+
     return collate_fn
 
 
 def reshape_multi_col_predictions(predictions, output_window_size, n_target_cols):
     """
-    Reshape concatenated predictions to separate target columns.
-    
-    The dataset concatenates data as: [t0_var0, t0_var1, t1_var0, t1_var1, t2_var0, t2_var1, ...]
-    This is because _concat_sequence does: seq.reshape(n_points, -1) on [n_points, window_size, n_target_cols]
-    which flattens in row-major order, interleaving timesteps and variables.
-    
+    Reshape predictions from the 4D FNO output format.
+
+    The model outputs (B, N_pts × T_out, C_obs) which is then concatenated across
+    batches to (N_samples, N_pts × T_out, C_obs). This function reshapes to
+    separate the spatial and temporal dimensions.
+
     Args:
-        predictions: Array of shape [N_samples, N_points, output_window_size * n_target_cols]
-        output_window_size: Number of timesteps
+        predictions: Array of shape [N_samples, N_pts × T_out, n_target_cols]
+            OR [N_samples, N_pts, output_window_size * n_target_cols] (legacy)
+        output_window_size: Number of output timesteps
         n_target_cols: Number of target columns
-        
+
     Returns:
-        Array of shape [N_samples, N_points, output_window_size, n_target_cols]
+        Array of shape [N_samples, N_pts, output_window_size, n_target_cols]
     """
     import numpy as np
-    n_samples, n_points, total_size = predictions.shape
-    
-    # Verify dimensions match
-    if total_size != output_window_size * n_target_cols:
-        raise ValueError(
-            f"Expected predictions shape [..., {output_window_size * n_target_cols}], "
-            f"got [..., {total_size}]"
-        )
-    
-    # The data is stored as [t0_v0, t0_v1, t1_v0, t1_v1, ...] for each point
-    # So we reshape to [N_samples, N_points, output_window_size, n_target_cols] directly
-    # This naturally de-interleaves the timesteps and variables
-    reshaped = predictions.reshape(n_samples, n_points, output_window_size, n_target_cols)
+    n_samples = predictions.shape[0]
+    total_pts = predictions.shape[1]
+    last_dim = predictions.shape[2]
+
+    if last_dim == n_target_cols:
+        # New format: (N_samples, N_pts × T_out, C_obs)
+        # Total points = N_pts × T_out, so N_pts = total_pts / T_out
+        n_points = total_pts // output_window_size
+        reshaped = predictions.reshape(n_samples, n_points, output_window_size, n_target_cols)
+    else:
+        # Legacy format: (N_samples, N_pts, T_out × C_obs)
+        n_points = total_pts
+        if last_dim != output_window_size * n_target_cols:
+            raise ValueError(
+                f"Expected predictions shape [..., {output_window_size * n_target_cols}] "
+                f"or [..., {n_target_cols}], got [..., {last_dim}]"
+            )
+        reshaped = predictions.reshape(n_samples, n_points, output_window_size, n_target_cols)
+
     return reshaped
