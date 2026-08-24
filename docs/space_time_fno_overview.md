@@ -12,27 +12,27 @@ The model transforms unstructured mesh inputs into continuous space-time forecas
 flowchart LR
     subgraph INPUT ["1. Irregular Mesh Input"]
         direction TB
-        in_pts["<b>Unstructured 3D Point Cloud</b><br/>• History: <i>T</i><sub>in</sub> = 10 steps<br/>• Features: <i>X</i> ∈ ℝ<sup>(<i>B</i> × <i>N</i><sub>pts</sub>·<i>T</i><sub>in</sub> × 10)</sup><br/>• Conc, Head, Pumping Rates"]
+        in_pts["<b>3D Unstructured Cloud</b><br/>• History: T_in = 10 steps<br/>• Coords + Features (C_in=10)<br/>• Conc, Head, Pumping"]
     end
 
     subgraph ENCODE ["2. Grid Encoding"]
         direction TB
-        enc["<b>Nearest-Neighbor Mapping</b><br/>Projects irregular nodes onto<br/>regular 4D Latent Grid<br/><code>(24 × 24 × 12 × 10)</code>"]
+        enc["<b>Nearest-Neighbor Mapping</b><br/>Interpolates points to<br/>4D Latent Regular Grid<br/>(24 × 24 × 12 × 10)"]
     end
 
     subgraph BACKBONE ["3. Space-Time FNO"]
         direction TB
-        fno["<b>Factorized Spectral Backbone</b><br/>• 2-Layer Lifting MLP (10 → 64)<br/>• 4× Factorized 𝒦<sub>ST</sub> Conv Blocks<br/>• Decoupled 3D Space + 1D Time"]
+        fno["<b>Factorized Spectral Backbone</b><br/>• 2-Layer Lifting (10 → 64)<br/>• 4× Space-Time Conv Blocks<br/>• Decoupled 3D Space + 1D Time"]
     end
 
     subgraph DECODE ["4. Continuous Decoding"]
         direction TB
-        dec["<b>3D Trilinear Sampling</b><br/><code>F.grid_sample()</code> decodes<br/>latent grid back to continuous<br/>physical query coordinates"]
+        dec["<b>3D Trilinear Sampling</b><br/>F.grid_sample() queries to<br/>continuous physical points<br/>across horizon T_out = 10"]
     end
 
     subgraph OUTPUT ["5. Output & Loss"]
         direction TB
-        out["<b>Forecast & Core Loss</b><br/>• Horizon: <i>T</i><sub>out</sub> = 10 steps<br/>• Predictions: <i>Ŷ</i> ∈ ℝ<sup>(<i>B</i> × <i>N</i> × 2)</sup><br/>• ℒ = (1−λ)ℒ<sub>global</sub> + λℒ<sub>conc-var</sub>"]
+        out["<b>Forecast & Core Loss</b><br/>• 2-Layer Projection (64 → 2)<br/>• Outputs: Conc, Head<br/>• Variance-Aware Core Loss"]
     end
 
     INPUT --> ENCODE --> BACKBONE --> DECODE --> OUTPUT
@@ -61,24 +61,24 @@ Inside each backbone block, expensive 4D spectral convolution is factorized into
 
 ```mermaid
 flowchart TD
-    in_act["<b>Input Latent Tensor</b> <i>H</i><sup>(<i>l</i>−1)</sup><br/>Shape: <code>(Batch, Channels=64, X=24, Y=24, Z=12, T=10)</code>"]
+    in_act["<b>Input Latent Activation H⁽ˡ⁻¹⁾</b><br/>Channels: 64<br/>Grid: (Nx=24, Ny=24, Nz=12, Nt=10)"]
 
     subgraph FACTORIZED_CONV ["Factorized Space-Time Spectral Operator"]
         direction LR
         
         subgraph SPACE ["Path A: 3D Spatial Spectral Conv"]
             direction TB
-            s_fft["3D Real FFT ℱ<sub>3D</sub>(X, Y, Z)"] --> s_mode["Truncate Spatial Modes<br/>(<i>k<sub>x</sub></i>=10, <i>k<sub>y</sub></i>=10, <i>k<sub>z</sub></i>=6)"] --> s_weight["Complex Weights <i>R</i><sub>space</sub><br/>(Low-Rank Factorized)"] --> s_ifft["3D Inverse Real FFT ℱ<sub>3D</sub><sup>−1</sup>"]
+            s_fft["<b>3D Real FFT</b><br/>rfftn(dim=[-3, -2, -1])"] --> s_mode["<b>Truncate Modes</b><br/>(kx=10, ky=10, kz=6)"] --> s_weight["<b>Low-Rank Weights</b><br/>R_space (TensorLy-Torch)"] --> s_ifft["<b>3D Inverse FFT</b><br/>irfftn(dim=[-3, -2, -1])"]
         end
 
         subgraph TIME ["Path B: 1D Temporal Spectral Conv"]
             direction TB
-            t_fft["1D Real FFT ℱ<sub>1D</sub>(T)"] --> t_mode["Truncate Temporal Modes<br/>(<i>k<sub>t</sub></i>=6)"] --> t_weight["Complex Weights <i>R</i><sub>time</sub><br/>(Low-Rank Factorized)"] --> t_ifft["1D Inverse Real FFT ℱ<sub>1D</sub><sup>−1</sup>"]
+            t_fft["<b>1D Real FFT</b><br/>rfftn(dim=[-1])"] --> t_mode["<b>Truncate Modes</b><br/>(kt=6)"] --> t_weight["<b>Low-Rank Weights</b><br/>R_time (TensorLy-Torch)"] --> t_ifft["<b>1D Inverse FFT</b><br/>irfftn(dim=[-1])"]
         end
 
         subgraph SKIP ["Path C: Linear Skip"]
             direction TB
-            skip_conv["Pointwise Conv3D <i>W</i><sub>skip</sub><br/><code>(1×1×1 Kernel)</code>"]
+            skip_conv["<b>Pointwise Conv3D</b><br/>W_skip (1×1×1 Kernel)"]
         end
     end
 
@@ -86,9 +86,9 @@ flowchart TD
     in_act --> TIME
     in_act --> SKIP
 
-    SPACE & TIME --> add_spectral["<b>Spectral Addition</b><br/>𝒦<sub>space</sub> + 𝒦<sub>time</sub>"]
-    add_spectral & SKIP --> add_all["<b>Residual Sum</b><br/>𝒦<sub>ST</sub> + <i>W</i><sub>skip</sub>"]
-    add_all --> act["<b>Activation</b><br/>GELU"] --> out_act["<b>Output Latent Tensor</b> <i>H</i><sup>(<i>l</i>)</sup>"]
+    SPACE & TIME --> add_spectral["<b>Spectral Addition</b><br/>K_space + K_time"]
+    add_spectral & SKIP --> add_all["<b>Residual Sum</b><br/>K_ST + W_skip"]
+    add_all --> act["<b>Activation</b><br/>GELU"] --> out_act["<b>Output Latent Activation H⁽ˡ⁾</b><br/>Channels: 64<br/>Grid: (Nx=24, Ny=24, Nz=12, Nt=10)"]
 
     classDef default fill:#ffffff,stroke:#64748b,stroke-width:1.5px;
     classDef spaceStyle fill:#eff6ff,stroke:#3b82f6,stroke-width:1.5px;
@@ -110,67 +110,26 @@ flowchart TD
 
 ---
 
-## 3. Variance-Aware Multi-Column Loss Computation
+## 3. Loss Formulation
 
-To ensure stable multi-step rollouts and prevent gradient vanishing around critical contamination zones, training uses a compound objective with **domain decomposition masking**, **pushforward temporal weighting**, and **variance-aware focus**.
-
-```mermaid
-flowchart LR
-    preds["<b>Raw Prediction <i>Ŷ</i></b><br/><code>(B, N_pts, T_out, 2)</code>"] --> core_slice["<b>1. Core Domain Slicing</b><br/>Extract <code>Ŷ[:, :N_core, :, :]</code><br/>(Exclude buffer ghost nodes)"]
-    
-    core_slice --> global_loss["<b>2. Global Relative L₂ Loss</b><br/>Measures bulk error across<br/>both Conc & Head"]
-    core_slice --> var_loss["<b>3. Variance-Aware Conc Loss</b><br/>Weights errors by spatial<br/>variance <b>w</b><sub>spatial</sub> (Plume front)"]
-    
-    time_w["<b>Pushforward Time Weights</b><br/><i>w<sub>t</sub></i> ∈ [1.0, 2.0] across <i>T</i><sub>out</sub>"] -.-> global_loss & var_loss
-
-    global_loss & var_loss --> total_loss["<b>4. Total Combined Loss</b><br/>ℒ = (1 − λ)ℒ<sub>global</sub> + λℒ<sub>conc-var</sub>"]
-
-    classDef default fill:#ffffff,stroke:#64748b,stroke-width:1.5px;
-    classDef sliceStyle fill:#fdf4ff,stroke:#c026d3,stroke-width:1.5px;
-    classDef lossStyle fill:#eff6ff,stroke:#2563eb,stroke-width:1.5px;
-    classDef finalStyle fill:#ecfdf5,stroke:#059669,stroke-width:2px;
-
-    class preds,time_w default;
-    class core_slice sliceStyle;
-    class global_loss,var_loss lossStyle;
-    class total_loss finalStyle;
-```
-
-### Mathematical Formulation
-
-#### 3.1. Core Domain Masking
-To eliminate artificial boundary artifacts from domain decomposition, the loss is computed strictly on interior core nodes:
+To ensure robust multi-step rollout without compounding drift or boundary distortion, the model is trained with a compound objective combining **interior domain masking**, **temporal pushforward weighting**, and **variance-aware plume focus**:
 
 $$
-\hat{\mathbf{Y}}_{\text{core}} = \hat{\mathbf{Y}}[:, :N_{\text{core}}, :, :]
+\mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc-var}} \quad (\lambda = 0.5)
 $$
 
-#### 3.2. Pushforward Temporal Weighting
-Linearly increases error penalty from $1.0\times$ at $t=1$ to $2.0\times$ at $t=10$ to prevent compounding autoregressive rollout errors:
+During domain decomposition, patches contain ghost buffer nodes for smooth interpolation; however, the loss is computed strictly on interior core nodes $\hat{\mathbf{Y}}_{\text{core}} = \hat{\mathbf{Y}}[:, :N_{\text{core}}, :, :]$ to eliminate artificial edge artifacts. Across the forecast horizon $T_{\text{out}} = 10$, timesteps are weighted by a linear pushforward schedule $w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1} \in [1.0, 2.0]$ that penalizes later time errors more heavily.
 
-$$
-w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1}, \quad t \in \{1, \dots, T_{\text{out}}\}
-$$
-
-#### 3.3. Global Relative $L_2$ Loss
-Provides balanced optimization across both physical variables (`mass_concentration` and `hydraulic_head`):
+The **Global Relative $L_2$ Loss** provides balanced relative error optimization across both physical variables (`mass_concentration` and `hydraulic_head`):
 
 $$
 \mathcal{L}_{\text{global}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert\hat{\mathbf{Y}}_t - \mathbf{Y}_t\Vert_2}{\Vert\mathbf{Y}_t\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
 $$
 
-#### 3.4. Variance-Aware Concentration Loss
-Uses pre-computed normalized temporal variances $\mathbf{w}_{\text{spatial}}$ to focus gradient energy on dynamic contaminant plume fronts:
+The **Variance-Aware Concentration Loss** uses pre-computed normalized temporal variances $\mathbf{w}_{\text{spatial}}$ to amplify gradient energy on moving, high-gradient contaminant plume fronts:
 
 $$
 \mathcal{L}_{\text{conc-var}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert(\hat{\mathbf{C}}_t - \mathbf{C}_t) \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2}{\Vert\mathbf{C}_t \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
-$$
-
-#### 3.5. Total Combined Loss
-Balances global field fidelity with sharp plume-front accuracy:
-
-$$
-\mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc-var}} \quad (\lambda = 0.5)
 $$
 
 ---
