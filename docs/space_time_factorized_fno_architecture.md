@@ -315,19 +315,36 @@ $$\mathcal{K}_{\text{time}}(v)(\mathbf{x}, t) = \mathcal{F}_{\text{1D}}^{-1} \le
 
 ### 8.1. Core vs. Ghost Node Handling
 To prevent artificial boundary artifacts from polluting the loss during patch-based domain decomposition, the model evaluates on the full patch ($N_{\text{core}} + N_{\text{ghost}}$) to ensure smooth interpolation, but the loss is computed **strictly on core nodes**:
-$$\hat{\mathbf{Y}}_{\text{core}} = \hat{\mathbf{Y}}[:, :N_{\text{core}}, :, :]$$
+
+$$
+\hat{\mathbf{Y}}_{\text{core}} = \hat{\mathbf{Y}}[:, :N_{\text{core}}, :, :]
+$$
 
 ### 8.2. Pushforward Temporal Weighting
 To mitigate error accumulation over long rollout horizons, timesteps are linearly weighted from $1.0$ to $2.0$:
-$$w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1}, \quad t \in \{1, \dots, T_{\text{out}}\}$$
+
+$$
+w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1}, \quad t \in \{1, \dots, T_{\text{out}}\}
+$$
 
 ### 8.3. Total Multi-Column Objective
-$$\mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc-var}}$$
+
+$$
+\mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc-var}}
+$$
 
 1. **Global Relative $L_2$ Loss**:
-   $$\mathcal{L}_{\text{global}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\|\hat{\mathbf{Y}}_t - \mathbf{Y}_t\|_2}{\|\mathbf{Y}_t\|_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}$$
+   
+   $$
+   \mathcal{L}_{\text{global}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert\hat{\mathbf{Y}}_t - \mathbf{Y}_t\Vert_2}{\Vert\mathbf{Y}_t\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
+   $$
+
 2. **Variance-Aware Concentration Loss**:
-   $$\mathcal{L}_{\text{conc-var}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\|(\hat{\mathbf{C}}_t - \mathbf{C}_t) \odot \sqrt{\mathbf{w}_{\text{spatial}}}\|_2}{\|\mathbf{C}_t \odot \sqrt{\mathbf{w}_{\text{spatial}}}\|_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}$$
+   
+   $$
+   \mathcal{L}_{\text{conc-var}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert(\hat{\mathbf{C}}_t - \mathbf{C}_t) \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2}{\Vert\mathbf{C}_t \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
+   $$
+   
    where $\mathbf{w}_{\text{spatial}}$ are pre-computed normalized temporal variances emphasizing high-gradient dynamic plume fronts.
 
 ---
