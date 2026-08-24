@@ -322,12 +322,12 @@ To mitigate error accumulation over long rollout horizons, timesteps are linearl
 $$w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1}, \quad t \in \{1, \dots, T_{\text{out}}\}$$
 
 ### 8.3. Total Multi-Column Objective
-$$\mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc\_var}}$$
+$$\mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc-var}}$$
 
 1. **Global Relative $L_2$ Loss**:
    $$\mathcal{L}_{\text{global}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\|\hat{\mathbf{Y}}_t - \mathbf{Y}_t\|_2}{\|\mathbf{Y}_t\|_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}$$
 2. **Variance-Aware Concentration Loss**:
-   $$\mathcal{L}_{\text{conc\_var}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\|(\hat{\mathbf{C}}_t - \mathbf{C}_t) \odot \sqrt{\mathbf{w}_{\text{spatial}}}\|_2}{\|\mathbf{C}_t \odot \sqrt{\mathbf{w}_{\text{spatial}}}\|_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}$$
+   $$\mathcal{L}_{\text{conc-var}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\|(\hat{\mathbf{C}}_t - \mathbf{C}_t) \odot \sqrt{\mathbf{w}_{\text{spatial}}}\|_2}{\|\mathbf{C}_t \odot \sqrt{\mathbf{w}_{\text{spatial}}}\|_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}$$
    where $\mathbf{w}_{\text{spatial}}$ are pre-computed normalized temporal variances emphasizing high-gradient dynamic plume fronts.
 
 ---
