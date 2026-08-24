@@ -561,6 +561,8 @@ class GWPatchDatasetMultiCol(Dataset):
             
             # Store weights in patch data
             patch['weights'] = weights.astype(np.float32)  # [n_points]
+
+            # print(f"Patch {patch['patch_id']} weights min: {patch['weights'].min()} max: {patch['weights'].max()}")
         
         # Compute and print weight statistics
         weight_stats = np.concatenate([p['weights'] for p in patch_data])

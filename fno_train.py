@@ -93,8 +93,8 @@ def define_model_parameters(args):
     
     # FNO configuration
     args.fno_n_layers = 4
-    args.fno_n_modes = (8, 8, 6, 8)
-    args.fno_hidden_channels = 128
+    args.fno_n_modes = (10, 10, 6, 6)
+    args.fno_hidden_channels = 64
     args.lifting_channels = 64
     args.projection_channel_ratio = 2
     # 4D space-time FNO packs channels per point-time pair.
@@ -108,7 +108,7 @@ def define_model_parameters(args):
         
     args.out_channels = args.n_target_cols
     # The latent grid covers the input window size
-    args.latent_query_dims = (16, 16, 8, args.input_window_size)
+    args.latent_query_dims = (24, 24, 12, args.input_window_size)
     
     return args
 
@@ -183,18 +183,14 @@ def _fno_4d_extract_core(outputs, batch, args):
     core_outputs = outputs_reshaped[:, :core_len, :, :]  # (B, N_core, T_out, C)
     core_targets = y_reshaped[:, :core_len, :, :]        # (B, N_core, T_out, C)
     
-    # Reshape back to flat format for loss function (which expects 3D: B, N_core, T_out*C)
-    B = outputs.shape[0]
-    core_outputs_flat = core_outputs.reshape(B, core_len, T_out * C_obs)
-    core_targets_flat = core_targets.reshape(B, core_len, T_out * C_obs)
+    # The updated variance_aware_multicol_loss now expects [B, N_core, T_out, C]
     
-    # Extract weights. batch['weights'] is already tiled to (N_core * T_out).
-    # We only need the spatial weights (N_core) for the loss function.
-    # The first N_core elements correspond to time step 0, which are identical across time.
+    # Extract weights safely. batch['weights'] is tiled to (N_core * T_out).
+    # We reshape to (N_pts, T_out) and take the first column for spatial weights up to core_len.
     weights = batch['weights'].to(args.device).float()
-    core_weights = weights[:core_len]
+    core_weights = weights.reshape((-1, T_out))[:core_len, 0]
     
-    return core_outputs_flat, core_targets_flat, core_weights
+    return core_outputs, core_targets, core_weights
 
 
 def create_data_loaders(train_ds, val_ds, args):

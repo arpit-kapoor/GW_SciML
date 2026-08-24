@@ -6,7 +6,7 @@
 #PBS -l ngpus=1
 #PBS -l mem=95GB
 #PBS -l jobfs=100GB
-#PBS -l walltime=6:00:00
+#PBS -l walltime=2:00:00
 
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

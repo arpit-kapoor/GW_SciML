@@ -102,11 +102,12 @@ class LpLoss(object):
     reductions : str or list
         Type of reduction ('sum' or 'mean') for each reduce_dim
     """
-    def __init__(self, d=1, p=2, L=2*math.pi, reduce_dims=0, reductions='sum'):
+    def __init__(self, d=1, p=2, L=2*math.pi, reduce_dims=0, reductions='sum', eps=1e-8):
         super().__init__()
 
         self.d = d  # Number of spatial dimensions
         self.p = p  # Lp norm order
+        self.eps = eps
 
         # Convert reduce_dims to list format
         if isinstance(reduce_dims, int):
@@ -177,8 +178,8 @@ class LpLoss(object):
         # Compute Lp norm of ground truth for normalization
         ynorm = torch.norm(torch.flatten(y, start_dim=-self.d), p=self.p, dim=-1, keepdim=False)
 
-        # Normalize difference by ground truth norm
-        diff = diff/ynorm
+        # Normalize difference by ground truth norm with epsilon to avoid division by zero
+        diff = diff / (ynorm + self.eps)
 
         # Apply reductions if specified
         if self.reduce_dims is not None:
@@ -620,8 +621,8 @@ def variance_aware_multicol_loss(
     last dimension.
     
     Args:
-        y_pred (torch.Tensor): Predicted values [B, N_points, T_out * C]
-        y_true (torch.Tensor): Target values [B, N_points, T_out * C]
+        y_pred (torch.Tensor): Predicted values [B, N_points, T_out, C]
+        y_true (torch.Tensor): Target values [B, N_points, T_out, C]
         weights (torch.Tensor): Pre-computed variance-aware weights [N_points]
         output_window_size (int): T_out (number of output timesteps)
         target_cols (list): List of target column names like ['mass_concentration', 'head']
@@ -639,42 +640,53 @@ def variance_aware_multicol_loss(
         and normalized to have mean 1.0.
     """
 
-    B, N, TC = y_pred.shape
-    C = TC // output_window_size
-    assert TC == output_window_size * C, f"Shape mismatch: {TC} != {output_window_size} * {C}"
+    B, N, T_out, C = y_pred.shape
+    assert T_out == output_window_size, f"Shape mismatch: {T_out} != {output_window_size}"
 
-    # reshape to [B, N, T_out, C]
-    y_pred = y_pred.view(B, N, output_window_size, C)
-    y_true = y_true.view(B, N, output_window_size, C)
-    
-    # Apply temporal pushforward weights
-    # Linearly increasing penalty from 1.0 to 2.0 across the output window
-    t_weights = torch.linspace(1.0, 2.0, output_window_size, device=y_pred.device)
-    t_weights = t_weights.view(1, 1, output_window_size, 1) # Broadcastable to [B, N, T, C]
-    
-    # We apply the weight to the differences
-    diff = y_pred - y_true
-    weighted_diff = diff * t_weights
-    
-    # To use LpLoss, we reconstruct a weighted y_pred as y_true + weighted_diff
-    # (Since LpLoss computes torch.norm(y_pred - y_true), this naturally handles it)
-    weighted_y_pred = y_true + weighted_diff
+    # Apply temporal pushforward weights (1.0 to 2.0)
+    t_weights = torch.linspace(1.0, 2.0, T_out, device=y_pred.device) # [T_out]
 
-    # Global loss over all variables
-    global_loss_fn = LpLoss(d=2, p=2, reduce_dims=[0, 1], reductions='mean')
-    global_loss = global_loss_fn(weighted_y_pred, y_true)
+    # Permute to [B, T_out, N, C]
+    y_pred_permute = torch.permute(y_pred, dims=(0, 2, 1, 3)) 
+    y_true_permute = torch.permute(y_true, dims=(0, 2, 1, 3))
 
-    # Variance-aware term: MSE for concentration
+    # ==========================================
+    # Global Loss (Relative L2 over N and C)
+    # ==========================================
+    # d=2 flattens N and C together. reduce_dims=0 takes the mean over Batch.
+    # Output shape of global_loss_fn is [T_out]
+    global_loss_fn = LpLoss(d=2, p=2, reduce_dims=0, reductions='mean') 
+
+    global_loss_per_t = global_loss_fn(y_pred_permute, y_true_permute)
+    # Weighted average over Time
+    global_loss = (t_weights * global_loss_per_t).sum() / t_weights.sum()
+
+    # ==========================================
+    # Variance-Aware Concentration Loss (Weighted Relative L2)
+    # ==========================================
     conc_idx = target_cols.index('mass_concentration')
-    conc_pred = weighted_y_pred[..., conc_idx]   # [B, N, T]
-    conc_true = y_true[..., conc_idx]   # [B, N, T]
+    conc_pred = y_pred_permute[..., conc_idx]  # [B, T_out, N]
+    conc_true = y_true_permute[..., conc_idx]  # [B, T_out, N]
 
     weights = weights.to(y_pred.device)
-    mse_per_node = ((conc_pred - conc_true) ** 2).mean(dim=[0, 2])  # [N]
-    weighted_mse = (weights * mse_per_node).mean()
-    conc_var_loss = torch.sqrt(weighted_mse + 1e-8) 
+    # Normalize spatial weights to sum to 1 and take square root
+    normalized_weights = weights / weights.sum()
+    sqrt_weights = torch.sqrt(normalized_weights).view(1, 1, -1)  # [1, 1, N]
 
+    # Pre-weight inputs to inject spatial variance weights inside the L2 Norm
+    weighted_conc_pred = conc_pred * sqrt_weights
+    weighted_conc_true = conc_true * sqrt_weights
+
+    # d=1 flattens N. reduce_dims=0 takes mean over B. Output is [T_out]. 
+    local_loss_fn = LpLoss(d=1, p=2, reduce_dims=0, reductions='mean', eps=1e-8)
+    local_loss_per_t = local_loss_fn(weighted_conc_pred, weighted_conc_true)
+
+    # Weighted average over Time
+    conc_var_loss = (t_weights * local_loss_per_t).sum() / t_weights.sum()
+
+    # ==========================================
     # Combine losses
-    loss = global_loss + lambda_conc_focus * conc_var_loss
+    # ==========================================
+    loss = (1 - lambda_conc_focus) * global_loss + lambda_conc_focus * conc_var_loss
 
     return loss, global_loss.detach(), conc_var_loss.detach()

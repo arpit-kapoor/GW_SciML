@@ -152,6 +152,7 @@ class FNOBlocks(nn.Module):
 
         # Create spectral convolution layers
         if self.n_dim == 4:
+            print("Using Factorise Space-Time Spectral Conv")
             conv_class = FactorizedSpaceTimeSpectralConv
         else:
             conv_class = SpectralConv
@@ -600,7 +601,7 @@ class FNOInterpolate(nn.Module):
         
         return grid_features
 
-    def _interpolate_from_grid(self, grid_features, output_queries_4d, spatial_ref_coords):
+    def _interpolate_from_grid(self, grid_features, output_queries_4d, spatial_ref_coords, n_pts_per_t):
         """
         Interpolate from regular 4D grid to output query points.
         Uses fold-T-into-batch approach: for each time slice, perform 3D grid_sample.
@@ -613,6 +614,8 @@ class FNOInterpolate(nn.Module):
             Output query coordinates, shape (N_pts × T_out, 4)
         spatial_ref_coords : torch.Tensor
             Spatial reference coordinates for normalization, shape (N_pts, coord_dim)
+        n_pts_per_t : int
+            Number of spatial points per time step
         
         Returns
         -------
@@ -621,7 +624,7 @@ class FNOInterpolate(nn.Module):
         """
         batch_size, channels, Nx, Ny, Nz, Nt = grid_features.shape
         n_total_queries = output_queries_4d.shape[0]
-        n_pts_per_t = n_total_queries // Nt
+        T_out = n_total_queries // n_pts_per_t
         
         # Normalize spatial coordinates of queries to [-1, 1]
         query_spatial = output_queries_4d[:, :self.coord_dim]  # (N_pts × T_out, 3)
@@ -629,13 +632,14 @@ class FNOInterpolate(nn.Module):
         
         # For each time slice, do 3D grid_sample
         all_sampled = []
-        for t_idx in range(Nt):
+        for t_idx in range(T_out):
+            grid_t_idx = min(t_idx, Nt - 1)
             # Extract grid slice for this time step: (batch, channels, Nx, Ny, Nz)
-            grid_slice = grid_features[:, :, :, :, :, t_idx]
+            grid_slice = grid_features[:, :, :, :, :, grid_t_idx]
             
             # Get query points for this time step
             # Layout: (N_pts, T, ...) → (N_pts*T, ...) means point i at time t = index i*T + t
-            t_query_indices = torch.arange(t_idx, n_total_queries, Nt, device=grid_features.device)
+            t_query_indices = torch.arange(t_idx, n_total_queries, T_out, device=grid_features.device)
             t_normalized = normalized_spatial[t_query_indices]  # (n_pts_per_t, 3)
             
             # Prepare for grid_sample: (batch, n_pts_per_t, 1, 1, 3)
@@ -657,9 +661,9 @@ class FNOInterpolate(nn.Module):
         # Stack and interleave time slices: need to match the (N_pts*T, ...) layout
         # all_sampled[t] has shape (batch, channels, n_pts_per_t)
         # We need output (batch, N_pts*T_out, channels) with layout pt0_t0, pt0_t1, ..., pt0_tT, pt1_t0, ...
-        stacked = torch.stack(all_sampled, dim=3)  # (batch, channels, n_pts_per_t, Nt)
-        # Reshape to (batch, channels, n_pts_per_t * Nt) with interleaved time
-        result = stacked.reshape(batch_size, channels, n_pts_per_t * Nt)
+        stacked = torch.stack(all_sampled, dim=3)  # (batch, channels, n_pts_per_t, T_out)
+        # Reshape to (batch, channels, n_pts_per_t * T_out) with interleaved time
+        result = stacked.reshape(batch_size, channels, n_pts_per_t * T_out)
         result = result.permute(0, 2, 1)  # (batch, N_pts × T_out, channels)
         
         return result
@@ -712,9 +716,11 @@ class FNOInterpolate(nn.Module):
         # 3. FNO blocks: factorized space-time spectral conv (already handles 4D)
         grid_features = self.fno_blocks(grid_features)
         
+        n_pts_per_t = input_geom.shape[0] // self.n_temporal_steps
+
         # 4. Interpolate from grid to output query points
         output_features = self._interpolate_from_grid(
-            grid_features, output_queries, spatial_ref
+            grid_features, output_queries, spatial_ref, n_pts_per_t
         )  # (batch, N_pts × T_out, hidden)
         
         # 5. Projection: (batch, N_pts × T_out, hidden) → (batch, N_pts × T_out, out_channels)

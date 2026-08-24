@@ -230,23 +230,24 @@ def make_collate_fn(args, coord_dim=3):
 
         if time_values is not None:
             # Clamp indices to valid range (safety)
-            time_indices_clamped = time_indices.clamp(0, len(time_values) - 1)
-            window_times = time_values[time_indices_clamped].float()  # (T_in + T_out,)
+            
+            assert( ((time_indices > 0) & (time_indices < len(time_values))).all(), f"Time indices out of bounds (should be within range [0, {len(time_values)}])" )
+            window_times = time_values[time_indices].float()  # (T_in + T_out,)
         else:
             # Fallback: use indices directly
             window_times = time_indices.float()
 
-        # Normalize time to [0, 1] within this window
-        t_min = window_times.min()
-        t_max = window_times.max()
-        t_range = t_max - t_min
-        if t_range > 0:
-            time_norm = (window_times - t_min) / t_range  # (T_in + T_out,)
-        else:
-            time_norm = torch.linspace(0, 1, T_in + T_out)
+        # Normalize time using mean and std
+        t_mean = time_values.mean()
+        t_std = time_values.std()
+        time_norm = (window_times - t_mean)/(t_std + 1e-10) # Avoid divide by zero
 
         input_time_norm = time_norm[:T_in]    # (T_in,)
         output_time_norm = time_norm[T_in:]   # (T_out,)
+
+        # T_min and T_max for grid
+        t_min = input_time_norm.min()
+        t_max = input_time_norm.max()
 
         # --- Build 4D coordinates ---
         # Input coords: tile spatial coords across T_in time steps → (N_pts × T_in, 4)
@@ -271,7 +272,7 @@ def make_collate_fn(args, coord_dim=3):
         ]
         # Temporal grid dimension: use full normalized time range [0, 1]
         n_t_grid = args.latent_query_dims[coord_dim]  # e.g., 10
-        latent_query_arr.append(torch.linspace(0, 1, n_t_grid, device=args.device))
+        latent_query_arr.append(torch.linspace(t_min, t_max, n_t_grid, device=args.device))
 
         # Create meshgrid → (Nx, Ny, Nz, Nt, 4)
         latent_queries = torch.stack(

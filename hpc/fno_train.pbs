@@ -2,9 +2,9 @@
 #PBS -P yl75
 #PBS -l walltime=12:00:00
 #PBS -q gpuvolta
-#PBS -l ncpus=12
-#PBS -l ngpus=1
-#PBS -l mem=95GB
+#PBS -l ncpus=24
+#PBS -l ngpus=2
+#PBS -l mem=191GB
 #PBS -l jobfs=100GB
 #PBS -l wd
 #PBS -l storage=scratch/yl75

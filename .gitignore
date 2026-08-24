@@ -190,14 +190,14 @@ cython_debug/
 *.html
 
 # HPC output files
-train_gino.o*
-train_fno.o* 
-predict_fno.o*
-predict_gino.o*
+gino_train.pbs.o*
+gino_predict.pbs.o*
+fno_train.pbs.o* 
+fno_predict.pbs.o*
 
-train_gino.e*
-train_fno.e* 
-predict_fno.e*
-predict_gino.e*
+gino_train.pbs.e*
+gino_predict.pbs.e*
+fno_train.pbs.e* 
+fno_predict.pbs.e*
 
 .vscode
