@@ -124,7 +124,13 @@ $$
 \mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc-var}} \quad (\lambda = 0.5)
 $$
 
-During domain decomposition, patches contain ghost buffer nodes for smooth interpolation; however, the loss is computed strictly on interior core nodes $\hat{\mathbf{Y}}_{\text{core}} = \hat{\mathbf{Y}}[:, :N_{\text{core}}, :, :]$ to eliminate artificial edge artifacts. Across the forecast horizon $T_{\text{out}} = 10$, timesteps are weighted by a linear pushforward schedule $w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1} \in [1.0, 2.0]$ that penalizes later time errors more heavily.
+During domain decomposition, patches contain ghost buffer nodes for smooth spatial interpolation; however, the loss is computed strictly on interior core nodes to eliminate artificial edge artifacts:
+
+$$
+\hat{\mathbf{Y}}_{\text{core}} = \hat{\mathbf{Y}}[:, :N_{\text{core}}, :, :]
+$$
+
+Across the forecast horizon $T_{\text{out}} = 10$, timesteps are weighted by a linear pushforward schedule $w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1} \in [1.0, 2.0]$ that penalizes later time errors more heavily.
 
 The **Global Relative $L_2$ Loss** provides balanced relative error optimization across both physical variables (`mass_concentration` and `hydraulic_head`):
 
