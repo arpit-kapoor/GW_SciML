@@ -9,43 +9,38 @@ A clean, presentation-ready overview of the **Space-Time Factorized Fourier Neur
 The model transforms unstructured mesh inputs into continuous space-time forecasts through a three-stage **Encode $\to$ Process $\to$ Decode** pipeline.
 
 ```mermaid
-flowchart LR
-    subgraph INPUT ["1. Irregular Mesh Input"]
-        direction TB
-        in_pts["<b>3D Unstructured Cloud</b><br/>• History: T_in = 10 steps<br/>• Coords + Features (C_in=10)<br/>• Conc, Head, Pumping"]
+flowchart TD
+    subgraph S1 ["Stage 1: Irregular Mesh Input"]
+        in_pts["Unstructured 3D Point Cloud<br/>History: Tin = 10 timesteps<br/>Features: Conc, Head, Pumping"]
     end
 
-    subgraph ENCODE ["2. Grid Encoding"]
-        direction TB
-        enc["<b>Nearest-Neighbor Mapping</b><br/>Interpolates points to<br/>4D Latent Regular Grid<br/>(24 × 24 × 12 × 10)"]
+    subgraph S2 ["Stage 2: 4D Grid Encoding"]
+        enc["Nearest-Neighbor Assignment<br/>Interpolates nodes to regular grid<br/>Grid Shape: (24 × 24 × 12 × 10)"]
     end
 
-    subgraph BACKBONE ["3. Space-Time FNO"]
-        direction TB
-        fno["<b>Factorized Spectral Backbone</b><br/>• 2-Layer Lifting (10 → 64)<br/>• 4× Space-Time Conv Blocks<br/>• Decoupled 3D Space + 1D Time"]
+    subgraph S3 ["Stage 3: Space-Time FNO Backbone"]
+        fno["Lifting MLP (10 to 64 channels)<br/>4x Factorized FNO Conv Blocks<br/>Decoupled (3D Space + 1D Time)"]
     end
 
-    subgraph DECODE ["4. Continuous Decoding"]
-        direction TB
-        dec["<b>3D Trilinear Sampling</b><br/>F.grid_sample() queries to<br/>continuous physical points<br/>across horizon T_out = 10"]
+    subgraph S4 ["Stage 4: Continuous Query Decoding"]
+        dec["3D Trilinear grid_sample()<br/>Decodes latent grid to query points<br/>Forecast Horizon: Tout = 10"]
     end
 
-    subgraph OUTPUT ["5. Output & Loss"]
-        direction TB
-        out["<b>Forecast & Core Loss</b><br/>• 2-Layer Projection (64 → 2)<br/>• Outputs: Conc, Head<br/>• Variance-Aware Core Loss"]
+    subgraph S5 ["Stage 5: Output Projection & Loss"]
+        out["Projection MLP (64 to 2 channels)<br/>Predictions: Conc and Head<br/>Variance-Aware Loss on Core Nodes"]
     end
 
-    INPUT --> ENCODE --> BACKBONE --> DECODE --> OUTPUT
+    S1 --> S2 --> S3 --> S4 --> S5
 
     classDef default fill:#ffffff,stroke:#64748b,stroke-width:1.5px;
     classDef highlight fill:#eff6ff,stroke:#2563eb,stroke-width:2px;
     classDef accent fill:#fdf4ff,stroke:#c026d3,stroke-width:2px;
     classDef success fill:#ecfdf5,stroke:#059669,stroke-width:2px;
 
-    class INPUT default;
-    class ENCODE,DECODE highlight;
-    class BACKBONE accent;
-    class OUTPUT success;
+    class S1 default;
+    class S2,S4 highlight;
+    class S3 accent;
+    class S5 success;
 ```
 
 ### Key Takeaways
@@ -61,24 +56,34 @@ Inside each backbone block, expensive 4D spectral convolution is factorized into
 
 ```mermaid
 flowchart TD
-    in_act["<b>Input Latent Activation H⁽ˡ⁻¹⁾</b><br/>Channels: 64<br/>Grid: (Nx=24, Ny=24, Nz=12, Nt=10)"]
+    in_act["Input Activation H(l-1)<br/>Shape: (B, 64, 24, 24, 12, 10)"]
 
     subgraph FACTORIZED_CONV ["Factorized Space-Time Spectral Operator"]
         direction LR
         
-        subgraph SPACE ["Path A: 3D Spatial Spectral Conv"]
+        subgraph SPACE ["Branch A: 3D Space Conv"]
             direction TB
-            s_fft["<b>3D Real FFT</b><br/>rfftn(dim=[-3, -2, -1])"] --> s_mode["<b>Truncate Modes</b><br/>(kx=10, ky=10, kz=6)"] --> s_weight["<b>Low-Rank Weights</b><br/>R_space (TensorLy-Torch)"] --> s_ifft["<b>3D Inverse FFT</b><br/>irfftn(dim=[-3, -2, -1])"]
+            s_fft["3D Real FFT<br/>dim = [-3, -2, -1]"]
+            s_mode["Truncate Modes<br/>(kx=10, ky=10, kz=6)"]
+            s_weight["Low-Rank Weights<br/>R_space (tltorch)"]
+            s_ifft["3D Inverse Real FFT<br/>dim = [-3, -2, -1]"]
+            
+            s_fft --> s_mode --> s_weight --> s_ifft
         end
 
-        subgraph TIME ["Path B: 1D Temporal Spectral Conv"]
+        subgraph TIME ["Branch B: 1D Time Conv"]
             direction TB
-            t_fft["<b>1D Real FFT</b><br/>rfftn(dim=[-1])"] --> t_mode["<b>Truncate Modes</b><br/>(kt=6)"] --> t_weight["<b>Low-Rank Weights</b><br/>R_time (TensorLy-Torch)"] --> t_ifft["<b>1D Inverse FFT</b><br/>irfftn(dim=[-1])"]
+            t_fft["1D Real FFT<br/>dim = [-1]"]
+            t_mode["Truncate Modes<br/>(kt = 6)"]
+            t_weight["Low-Rank Weights<br/>R_time (tltorch)"]
+            t_ifft["1D Inverse Real FFT<br/>dim = [-1]"]
+            
+            t_fft --> t_mode --> t_weight --> t_ifft
         end
 
-        subgraph SKIP ["Path C: Linear Skip"]
+        subgraph SKIP ["Branch C: Skip Connection"]
             direction TB
-            skip_conv["<b>Pointwise Conv3D</b><br/>W_skip (1×1×1 Kernel)"]
+            skip_conv["Pointwise Conv3D<br/>W_skip (1x1x1 kernel)"]
         end
     end
 
@@ -86,9 +91,10 @@ flowchart TD
     in_act --> TIME
     in_act --> SKIP
 
-    SPACE & TIME --> add_spectral["<b>Spectral Addition</b><br/>K_space + K_time"]
-    add_spectral & SKIP --> add_all["<b>Residual Sum</b><br/>K_ST + W_skip"]
-    add_all --> act["<b>Activation</b><br/>GELU"] --> out_act["<b>Output Latent Activation H⁽ˡ⁾</b><br/>Channels: 64<br/>Grid: (Nx=24, Ny=24, Nz=12, Nt=10)"]
+    SPACE & TIME --> add_spectral["Spectral Sum<br/>K_space + K_time"]
+    add_spectral & SKIP --> add_all["Residual Sum<br/>K_ST + W_skip"]
+    add_all --> act["Activation<br/>GELU"]
+    act --> out_act["Output Activation H(l)<br/>Shape: (B, 64, 24, 24, 12, 10)"]
 
     classDef default fill:#ffffff,stroke:#64748b,stroke-width:1.5px;
     classDef spaceStyle fill:#eff6ff,stroke:#3b82f6,stroke-width:1.5px;
