@@ -138,43 +138,40 @@ flowchart LR
 
 ### Mathematical Formulation
 
-1. **Core Domain Masking**:
-   
-   $$
-   \hat{\mathbf{Y}}_{\text{core}} = \hat{\mathbf{Y}}[:, :N_{\text{core}}, :, :]
-   $$
-   
-   Eliminates artificial edge effects created by patch boundaries during domain decomposition.
+#### 3.1. Core Domain Masking
+To eliminate artificial boundary artifacts from domain decomposition, the loss is computed strictly on interior core nodes:
 
-2. **Pushforward Temporal Weighting**:
-   
-   $$
-   w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1}, \quad t \in \{1, \dots, T_{\text{out}}\}
-   $$
-   
-   Linearly increases penalty from $1.0\times$ at $t=1$ to $2.0\times$ at $t=10$ to prevent compounding autoregressive rollout errors.
+$$
+\hat{\mathbf{Y}}_{\text{core}} = \hat{\mathbf{Y}}[:, :N_{\text{core}}, :, :]
+$$
 
-3. **Global Relative $L_2$ Loss**:
-   
-   $$
-   \mathcal{L}_{\text{global}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert\hat{\mathbf{Y}}_t - \mathbf{Y}_t\Vert_2}{\Vert\mathbf{Y}_t\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
-   $$
-   
-   Provides balanced optimization across both physical variables (`mass_concentration` and `hydraulic_head`).
+#### 3.2. Pushforward Temporal Weighting
+Linearly increases error penalty from $1.0\times$ at $t=1$ to $2.0\times$ at $t=10$ to prevent compounding autoregressive rollout errors:
 
-4. **Variance-Aware Concentration Loss**:
-   
-   $$
-   \mathcal{L}_{\text{conc-var}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert(\hat{\mathbf{C}}_t - \mathbf{C}_t) \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2}{\Vert\mathbf{C}_t \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
-   $$
-   
-   $\mathbf{w}_{\text{spatial}}$ are pre-computed normalized temporal variances that focus gradient energy on fast-moving, high-gradient contaminant plume fronts rather than static background regions.
+$$
+w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1}, \quad t \in \{1, \dots, T_{\text{out}}\}
+$$
 
-5. **Total Combined Loss**:
-   
-   $$
-   \mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc-var}} \quad (\lambda = 0.5)
-   $$
+#### 3.3. Global Relative $L_2$ Loss
+Provides balanced optimization across both physical variables (`mass_concentration` and `hydraulic_head`):
+
+$$
+\mathcal{L}_{\text{global}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert\hat{\mathbf{Y}}_t - \mathbf{Y}_t\Vert_2}{\Vert\mathbf{Y}_t\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
+$$
+
+#### 3.4. Variance-Aware Concentration Loss
+Uses pre-computed normalized temporal variances $\mathbf{w}_{\text{spatial}}$ to focus gradient energy on dynamic contaminant plume fronts:
+
+$$
+\mathcal{L}_{\text{conc-var}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert(\hat{\mathbf{C}}_t - \mathbf{C}_t) \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2}{\Vert\mathbf{C}_t \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
+$$
+
+#### 3.5. Total Combined Loss
+Balances global field fidelity with sharp plume-front accuracy:
+
+$$
+\mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc-var}} \quad (\lambda = 0.5)
+$$
 
 ---
 

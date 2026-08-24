@@ -328,24 +328,25 @@ w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1}, \quad t \in \{1, \dots, T_{\text{o
 $$
 
 ### 8.3. Total Multi-Column Objective
+The total loss balances global field fidelity with sharp plume-front accuracy:
 
 $$
 \mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc-var}}
 $$
 
-1. **Global Relative $L_2$ Loss**:
-   
-   $$
-   \mathcal{L}_{\text{global}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert\hat{\mathbf{Y}}_t - \mathbf{Y}_t\Vert_2}{\Vert\mathbf{Y}_t\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
-   $$
+#### Global Relative $L_2$ Loss
+Provides balanced relative error optimization across both physical variables (`mass_concentration` and `hydraulic_head`):
 
-2. **Variance-Aware Concentration Loss**:
-   
-   $$
-   \mathcal{L}_{\text{conc-var}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert(\hat{\mathbf{C}}_t - \mathbf{C}_t) \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2}{\Vert\mathbf{C}_t \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
-   $$
-   
-   where $\mathbf{w}_{\text{spatial}}$ are pre-computed normalized temporal variances emphasizing high-gradient dynamic plume fronts.
+$$
+\mathcal{L}_{\text{global}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert\hat{\mathbf{Y}}_t - \mathbf{Y}_t\Vert_2}{\Vert\mathbf{Y}_t\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
+$$
+
+#### Variance-Aware Concentration Loss
+Uses pre-computed normalized temporal variances $\mathbf{w}_{\text{spatial}}$ to focus gradient energy on dynamic plume fronts:
+
+$$
+\mathcal{L}_{\text{conc-var}} = \frac{\sum_{t=1}^{T_{\text{out}}} w_t \cdot \frac{\Vert(\hat{\mathbf{C}}_t - \mathbf{C}_t) \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2}{\Vert\mathbf{C}_t \odot \sqrt{\mathbf{w}_{\text{spatial}}}\Vert_2 + \epsilon}}{\sum_{t=1}^{T_{\text{out}}} w_t}
+$$
 
 ---
 
