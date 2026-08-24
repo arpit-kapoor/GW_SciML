@@ -5,33 +5,19 @@ This document provides a comprehensive technical reference and architecture diag
 ---
 
 ## Table of Contents
-1. [How to Render Mermaid Diagrams](#1-how-to-render-mermaid-diagrams)
-2. [End-to-End Architecture Overview](#2-end-to-end-architecture-overview)
-3. [Interpolation Encoding: Irregular Point Cloud → 4D Latent Grid](#3-interpolation-encoding-irregular-point-cloud--4d-latent-grid)
-4. [Space-Time Factorized Spectral Conv Block](#4-space-time-factorized-spectral-conv-block)
-5. [Interpolation Decoding: 4D Latent Grid → Continuous Physical Queries](#5-interpolation-decoding-4d-latent-grid--continuous-physical-queries)
-6. [Data Flow & Collation Pipeline](#6-data-flow--collation-pipeline)
-7. [Detailed Layer Specifications & Tensor Shapes](#7-detailed-layer-specifications--tensor-shapes)
-8. [Mathematical Formulation](#8-mathematical-formulation)
-9. [Domain Decomposition & Loss Computation](#9-domain-decomposition--loss-computation)
-10. [Code References](#10-code-references)
+1. [End-to-End Architecture Overview](#1-end-to-end-architecture-overview)
+2. [Interpolation Encoding: Irregular Point Cloud → 4D Latent Grid](#2-interpolation-encoding-irregular-point-cloud--4d-latent-grid)
+3. [Space-Time Factorized Spectral Conv Block](#3-space-time-factorized-spectral-conv-block)
+4. [Interpolation Decoding: 4D Latent Grid → Continuous Physical Queries](#4-interpolation-decoding-4d-latent-grid--continuous-physical-queries)
+5. [Data Flow & Collation Pipeline](#5-data-flow--collation-pipeline)
+6. [Detailed Layer Specifications & Tensor Shapes](#6-detailed-layer-specifications--tensor-shapes)
+7. [Mathematical Formulation](#7-mathematical-formulation)
+8. [Domain Decomposition & Loss Computation](#8-domain-decomposition--loss-computation)
+9. [Code References](#9-code-references)
 
 ---
 
-## 1. How to Render Mermaid Diagrams
-
-All diagrams in this file use standard **Mermaid.js** syntax enclosed in ` ```mermaid ` code fences. You can render them directly using:
-
-* **GitHub / GitLab / Bitbucket**: Automatically rendered in markdown previews, files, and pull requests.
-* **VS Code**:
-  * Open this file and press `Cmd+Shift+V` (Mac) or `Ctrl+Shift+V` (Windows/Linux) to open the Markdown Preview.
-  * If Mermaid does not render by default, install the extension **"Markdown Preview Mermaid Support"** by Matt Bierner (`bierner.markdown-mermaid`).
-* **Obsidian / Notion**: Native support out of the box.
-* **Mermaid Live Editor**: Copy any ` ```mermaid ` code block and paste it directly into [mermaid.live](https://mermaid.live) to render, edit, or export as SVG, PNG, or PDF.
-
----
-
-## 2. End-to-End Architecture Overview
+## 1. End-to-End Architecture Overview
 
 The `FNOInterpolate` model bridges irregular unstructured meshes (FEFLOW point clouds) and regular grid-based spectral Fourier Neural Operators via a 3-stage process: **Encode (Interpolate) $\to$ Process (Factorized Space-Time FNO) $\to$ Decode (Continuous `grid_sample`)**.
 
@@ -96,7 +82,7 @@ flowchart TD
 
 ---
 
-## 3. Interpolation Encoding: Irregular Point Cloud → 4D Latent Grid
+## 2. Interpolation Encoding: Irregular Point Cloud → 4D Latent Grid
 
 The encoder [`_interpolate_to_grid`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/models/neuralop/fno.py#L522-L602) maps irregular 3D point cloud nodes across time steps into a structured 4D regular tensor lattice $(N_x, N_y, N_z, N_t)$:
 
@@ -141,7 +127,7 @@ flowchart TD
 
 ---
 
-## 4. Space-Time Factorized Spectral Conv Block
+## 3. Space-Time Factorized Spectral Conv Block
 
 Inside each [`FNOBlocks`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/models/neuralop/fno.py#L91-L210) layer, full 4D Fourier convolution is split into decoupled spatial and temporal spectral convolutions:
 
@@ -216,7 +202,7 @@ flowchart TD
 
 ---
 
-## 5. Interpolation Decoding: 4D Latent Grid → Continuous Physical Queries
+## 4. Interpolation Decoding: 4D Latent Grid → Continuous Physical Queries
 
 The decoder [`_interpolate_from_grid`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/models/neuralop/fno.py#L604-L669) decodes the updated regular grid back to continuous physical point coordinates $(x_q, y_q, z_q)$ across prediction horizon $T_{\text{out}}$ using continuous **3D Trilinear `grid_sample`**:
 
@@ -263,7 +249,7 @@ flowchart TD
 
 ---
 
-## 6. Data Flow & Collation Pipeline
+## 5. Data Flow & Collation Pipeline
 
 In [`src/data/data_utils.py:make_collate_fn`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/data/data_utils.py#L185):
 
@@ -282,7 +268,7 @@ In [`src/data/data_utils.py:make_collate_fn`](file:///Users/arpitkapoor/Projects
 
 ---
 
-## 7. Detailed Layer Specifications & Tensor Shapes
+## 6. Detailed Layer Specifications & Tensor Shapes
 
 | Stage | Operation / Module | Input Shape | Output Shape | Parameters & Hyperparameters |
 | :--- | :--- | :--- | :--- | :--- |
@@ -299,9 +285,9 @@ In [`src/data/data_utils.py:make_collate_fn`](file:///Users/arpitkapoor/Projects
 
 ---
 
-## 8. Mathematical Formulation
+## 7. Mathematical Formulation
 
-### 8.1. Continuous Factorized Integral Kernel
+### 7.1. Continuous Factorized Integral Kernel
 Let $v(x, y, z, t) \in \mathbb{R}^{d_{\text{hidden}}}$ represent the latent space-time feature field. The action of layer $l$ is defined as:
 
 $$v^{(l+1)}(\mathbf{x}, t) = \sigma \left( \mathcal{K}_{\text{ST}}(v^{(l)})(\mathbf{x}, t) + W_{\text{skip}} v^{(l)}(\mathbf{x}, t) \right)$$
@@ -310,14 +296,14 @@ where the factorized kernel operator is:
 
 $$\mathcal{K}_{\text{ST}}(v) = \mathcal{K}_{\text{space}}(v) + \mathcal{K}_{\text{time}}(v)$$
 
-### 8.2. Spatial Spectral Kernel
+### 7.2. Spatial Spectral Kernel
 For each temporal slice $t$:
 $$\mathcal{K}_{\text{space}}(v)(\mathbf{x}, t) = \mathcal{F}_{\text{3D}}^{-1} \left( R_{\text{space}} \cdot \mathcal{F}_{\text{3D}}(v(\cdot, t)) \right)(\mathbf{x})$$
 - $\mathcal{F}_{\text{3D}}$ is the 3D real Fourier transform over $(X, Y, Z)$.
 - Modes are truncated to $k_x \le 10, k_y \le 10, k_z \le 6$.
 - $R_{\text{space}}$ is a complex parameter tensor represented in low-rank factorized format via TensorLy-Torch (`tltorch`).
 
-### 8.3. Temporal Spectral Kernel
+### 7.3. Temporal Spectral Kernel
 For each spatial location $\mathbf{x} = (x, y, z)$:
 $$\mathcal{K}_{\text{time}}(v)(\mathbf{x}, t) = \mathcal{F}_{\text{1D}}^{-1} \left( R_{\text{time}} \cdot \mathcal{F}_{\text{1D}}(v(\mathbf{x}, \cdot)) \right)(t)$$
 - $\mathcal{F}_{\text{1D}}$ is the 1D real Fourier transform over $T$.
@@ -325,17 +311,17 @@ $$\mathcal{K}_{\text{time}}(v)(\mathbf{x}, t) = \mathcal{F}_{\text{1D}}^{-1} \le
 
 ---
 
-## 9. Domain Decomposition & Loss Computation
+## 8. Domain Decomposition & Loss Computation
 
-### 9.1. Core vs. Ghost Node Handling
+### 8.1. Core vs. Ghost Node Handling
 To prevent artificial boundary artifacts from polluting the loss during patch-based domain decomposition, the model evaluates on the full patch ($N_{\text{core}} + N_{\text{ghost}}$) to ensure smooth interpolation, but the loss is computed **strictly on core nodes**:
 $$\hat{\mathbf{Y}}_{\text{core}} = \hat{\mathbf{Y}}[:, :N_{\text{core}}, :, :]$$
 
-### 9.2. Pushforward Temporal Weighting
+### 8.2. Pushforward Temporal Weighting
 To mitigate error accumulation over long rollout horizons, timesteps are linearly weighted from $1.0$ to $2.0$:
 $$w_t = 1.0 + \frac{t - 1}{T_{\text{out}} - 1}, \quad t \in \{1, \dots, T_{\text{out}}\}$$
 
-### 9.3. Total Multi-Column Objective
+### 8.3. Total Multi-Column Objective
 $$\mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lambda \mathcal{L}_{\text{conc\_var}}$$
 
 1. **Global Relative $L_2$ Loss**:
@@ -346,7 +332,7 @@ $$\mathcal{L}_{\text{total}} = (1 - \lambda) \mathcal{L}_{\text{global}} + \lamb
 
 ---
 
-## 10. Code References
+## 9. Code References
 
 - **Training Entrypoint**: [`fno_train.py`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/fno_train.py)
 - **Model Definition (`FNOInterpolate`)**: [`src/models/neuralop/fno.py:362`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/models/neuralop/fno.py#L362)
