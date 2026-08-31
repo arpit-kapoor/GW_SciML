@@ -67,15 +67,19 @@ def setup_training_arguments(
     # Model parameters
     parser.add_argument('--learning-rate', type=float, default=5e-4,
                        help='Learning rate for optimizer')
+    parser.add_argument('--weight-decay', type=float, default=1e-3,
+                       help='AdamW weight decay (L2 regularization on spectral kernel weights)')
     parser.add_argument('--lr-gamma', type=float, default=0.98,
                        help='Exponential learning rate decay factor')
     parser.add_argument('--lr-scheduler-interval', type=int, default=10,
                        help='Number of epochs between learning rate scheduler updates')
+    parser.add_argument('--lr-warmup-epochs', type=int, default=5,
+                       help='Number of linear warmup epochs before cosine annealing (cosine scheduler only)')
     parser.add_argument('--grad-clip-norm', type=float, default=1.0,
                        help='Gradient clipping norm value (0 to disable)')
     parser.add_argument('--scheduler-type', type=str, default='exponential', 
                        choices=['exponential', 'cosine'],
-                       help='Type of learning rate scheduler to use')
+                       help='Type of learning rate scheduler to use (exponential or cosine with linear warmup)')
     parser.add_argument('--epochs', type=int, default=5,
                        help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32,

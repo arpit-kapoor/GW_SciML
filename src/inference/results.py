@@ -9,6 +9,7 @@ import json
 import pickle
 import datetime as dt
 import numpy as np
+import torch
 from .metrics import denormalize_observations
 
 
@@ -79,6 +80,10 @@ def save_metadata(metadata, output_dir, filename='metadata.json'):
             return float(obj)
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
+        elif isinstance(obj, torch.Tensor):
+            return obj.detach().cpu().tolist() if obj.numel() > 1 else obj.item()
+        elif isinstance(obj, torch.device):
+            return str(obj)
         elif isinstance(obj, dict):
             return {k: convert_to_serializable(v) for k, v in obj.items()}
         elif isinstance(obj, list):

@@ -379,13 +379,13 @@ def _fno_4d_predict(model, dataset, args, dataset_name, collate_fn):
                 input_coords, latent_queries, batch_size, output_queries=output_coords
             )
             
-            outputs = model(input_geom_b, latent_queries_b, x, output_queries_b)
+            outputs = model(input_geom_b, latent_queries_b, output_queries_b, x)
             
             # Extract core points
             y = batch['y'].to(args.device).float()
             core_len = batch['core_len']
             T_out = batch['T_out']
-            C_obs = args.n_target_cols
+            C_obs = len(args.target_cols)
             
             outputs_reshaped = reshape_multi_col_predictions(outputs, T_out, C_obs)
             y_reshaped = reshape_multi_col_predictions(y, T_out, C_obs)
@@ -411,8 +411,10 @@ def _fno_4d_predict(model, dataset, args, dataset_name, collate_fn):
             
             for i in range(batch_size):
                 all_patch_metadata.append({
-                    'batch_idx': batch_idx, 'sample_idx': i, 'patch_id': patch_id,
-                    'dataset': dataset_name, 'core_len': core_len
+                    'batch_idx': batch_idx, 'sample_idx': i,
+                    'patch_id': patch_id.item() if hasattr(patch_id, 'item') else patch_id,
+                    'dataset': dataset_name,
+                    'core_len': core_len.item() if hasattr(core_len, 'item') else core_len
                 })
                 
     for patch_id in all_predictions.keys():
@@ -494,7 +496,7 @@ def _fno_4d_rolling_predict(model, dataset, args, dataset_name, collate_fn, obs_
                     input_coords, latent_queries, 1, output_queries=output_coords
                 )
                 
-                outputs = model(input_geom_b, latent_queries_b, x, output_queries_b)
+                outputs = model(input_geom_b, latent_queries_b, output_queries_b, x)
                 
                 y = batch['y'].to(args.device).float()
                 outputs_reshaped = reshape_multi_col_predictions(outputs, W_out, n_target_cols)
@@ -535,8 +537,10 @@ def _fno_4d_rolling_predict(model, dataset, args, dataset_name, collate_fn, obs_
                 all_coords[pid].append(core_coords_sp)
                 
                 all_patch_metadata.append({
-                    'batch_idx': step_idx, 'sample_idx': 0, 'patch_id': pid,
-                    'dataset': dataset_name, 'core_len': core_len
+                    'batch_idx': step_idx, 'sample_idx': 0,
+                    'patch_id': pid.item() if hasattr(pid, 'item') else pid,
+                    'dataset': dataset_name,
+                    'core_len': core_len.item() if hasattr(core_len, 'item') else core_len
                 })
                 
     for patch_id in all_predictions.keys():

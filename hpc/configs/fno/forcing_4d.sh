@@ -7,12 +7,12 @@ TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head
---epochs 200
+--epochs 250
 --batch-size 32
 --learning-rate 1e-3
---scheduler-type exponential
---lr-scheduler-interval 10
---lr-gamma 0.95
+--weight-decay 1e-4
+--scheduler-type cosine
+--lr-warmup-epochs 5
 --grad-clip-norm 1.0
 --input-window-size 10
 --output-window-size 10

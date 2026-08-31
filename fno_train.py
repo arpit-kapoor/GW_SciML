@@ -93,7 +93,7 @@ def define_model_parameters(args):
     
     # FNO configuration
     args.fno_n_layers = 4
-    args.fno_n_modes = (10, 10, 6, 6)
+    args.fno_n_modes = (10, 10, 6, 4)
     args.fno_hidden_channels = 64
     args.lifting_channels = 64
     args.projection_channel_ratio = 2
@@ -288,11 +288,35 @@ if __name__ == "__main__":
         model = torch.nn.DataParallel(model)
 
     # Setup optimizer and scheduler
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    # AdamW adds decoupled weight decay as a spectral kernel regularizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
+    )
     if args.scheduler_type == 'cosine':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=args.epochs, eta_min=args.learning_rate * 0.01
-        )
+        warmup_epochs = args.lr_warmup_epochs
+        cosine_epochs = max(args.epochs - warmup_epochs, 1)
+        if warmup_epochs > 0:
+            # Linear warmup: ramp lr from (1/warmup_epochs) up to 1.0 of base lr
+            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=1.0 / max(warmup_epochs, 1),
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+            cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=cosine_epochs, eta_min=args.learning_rate * 0.01
+            )
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, cosine_scheduler],
+                milestones=[warmup_epochs],
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=args.epochs, eta_min=args.learning_rate * 0.01
+            )
     else:
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lr_gamma)
     

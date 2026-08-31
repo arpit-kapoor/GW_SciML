@@ -332,9 +332,14 @@ def _default_extract_core_points(outputs, batch, args):
 
 
 def _step_scheduler(scheduler, args, epoch):
-    """Step the learning rate scheduler based on configuration."""
+    """Step the learning rate scheduler based on configuration.
+
+    Both 'cosine' variants (plain CosineAnnealingLR and the linear-warmup
+    SequentialLR composite) advance every epoch.  The exponential scheduler
+    advances at the user-configured interval.
+    """
     if hasattr(args, 'scheduler_type') and args.scheduler_type == 'cosine':
-        # Cosine scheduler steps every epoch
+        # Cosine (and warmup+cosine SequentialLR) steps every epoch
         scheduler.step()
         print(f"Learning rate updated to: {scheduler.get_last_lr()[0]:.6f}")
     else:
