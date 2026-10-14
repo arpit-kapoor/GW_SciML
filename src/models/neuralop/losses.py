@@ -621,8 +621,9 @@ def variance_aware_multicol_loss(
     last dimension.
     
     Args:
-        y_pred (torch.Tensor): Predicted values [B, N_points, T_out, C]
-        y_true (torch.Tensor): Target values [B, N_points, T_out, C]
+        y_pred (torch.Tensor): Predicted values [B, N_points, T_out, C],
+            or flattened [B, N_points, T_out * C] (GINO / 3D FNO layout)
+        y_true (torch.Tensor): Target values, same shape as y_pred
         weights (torch.Tensor): Pre-computed variance-aware weights [N_points]
         output_window_size (int): T_out (number of output timesteps)
         target_cols (list): List of target column names like ['mass_concentration', 'head']
@@ -639,6 +640,11 @@ def variance_aware_multicol_loss(
         The weights should be pre-computed based on temporal variances across the dataset
         and normalized to have mean 1.0.
     """
+
+    if y_pred.dim() == 3:
+        # Flattened layout [B, N, T_out * C] is stored as [t0_c0, t0_c1, t1_c0, ...]
+        y_pred = y_pred.reshape(*y_pred.shape[:2], output_window_size, -1)
+        y_true = y_true.reshape(*y_true.shape[:2], output_window_size, -1)
 
     B, N, T_out, C = y_pred.shape
     assert T_out == output_window_size, f"Shape mismatch: {T_out} != {output_window_size}"

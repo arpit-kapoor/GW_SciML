@@ -1,6 +1,6 @@
 # Space-Time Factorized FNO Overview
 
-A clean, presentation-ready overview of the **Space-Time Factorized Fourier Neural Operator** (`FNOInterpolate`). This document summarizes the end-to-end forecasting pipeline, core operator mechanics, and loss formulation into high-level, easily digestible diagrams and sections suitable for meetings and slide decks.
+A clean, presentation-ready overview of the **Space-Time Factorized Fourier Neural Operator** (`SpaceTimeFNOInterpolate`). This document summarizes the end-to-end forecasting pipeline, core operator mechanics, and loss formulation into high-level, easily digestible diagrams and sections suitable for meetings and slide decks.
 
 ---
 

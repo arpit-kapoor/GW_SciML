@@ -3,6 +3,11 @@ Train FNOInterpolate on variable-density groundwater patches with multi-column s
 
 FNOInterpolate uses interpolation (instead of GNO blocks) for encoding/decoding between
 point clouds and regular grids, with FNO blocks operating in the latent grid space.
+
+Two variants are supported:
+- 3D FNO (default): time steps are flattened into channels on an (X, Y, Z) latent grid.
+- Space-time factorized FNO (--space-time): 4D (X, Y, Z, T) latent grid with a
+  factorized spatial/temporal spectral convolution.
 """
 
 import sys
@@ -22,8 +27,9 @@ from src.data.data_utils import (
     calculate_obs_transform,
     create_patch_datasets,
     make_collate_fn,
+    make_spacetime_collate_fn,
 )
-from src.models.neuralop.fno import FNOInterpolate
+from src.models.neuralop.fno import FNOInterpolate, SpaceTimeFNOInterpolate
 from src.models.neuralop.losses import variance_aware_multicol_loss
 from src.training import (
     setup_training_arguments,
@@ -83,6 +89,9 @@ def add_fno_interpolate_model_args(parser):
     parser.add_argument('--padding-mode', type=str, default='border',
                         dest='padding_mode',
                         help='Padding mode for grid_sample (zeros, border, reflection)')
+    parser.add_argument('--space-time', action='store_true', default=False,
+                        dest='space_time',
+                        help='Train the space-time factorized (4D) FNO instead of the 3D FNO')
     return parser
 
 
@@ -93,29 +102,45 @@ def define_model_parameters(args):
     
     # FNO configuration
     args.fno_n_layers = 4
-    args.fno_n_modes = (10, 10, 6, 4)
-    args.fno_hidden_channels = 64
     args.lifting_channels = 64
     args.projection_channel_ratio = 2
-    # 4D space-time FNO packs channels per point-time pair.
-    # Base channels: observations at current step
-    args.in_channels = args.n_target_cols
-    
-    if getattr(args, 'forcings_required', False):
-        # We pack 4 current forcings and 4 future forcings per point-time pair
-        args.forcings_dim = 4
-        args.in_channels += 2 * args.forcings_dim
-        
-    args.out_channels = args.n_target_cols
-    # The latent grid covers the input window size
-    args.latent_query_dims = (24, 24, 12, args.input_window_size)
+
+    if args.space_time:
+        args.fno_n_modes = (10, 10, 6, 4)
+        args.fno_hidden_channels = 64
+        # 4D space-time FNO packs channels per point-time pair.
+        # Base channels: observations at current step
+        args.in_channels = args.n_target_cols
+
+        if getattr(args, 'forcings_required', False):
+            # We pack 4 current forcings and 4 future forcings per point-time pair
+            args.forcings_dim = 4
+            args.in_channels += 2 * args.forcings_dim
+
+        args.out_channels = args.n_target_cols
+        # The latent grid covers the input window size
+        args.latent_query_dims = (24, 24, 12, args.input_window_size)
+    else:
+        # 3D FNO configuration (same as GINO): time steps are flattened into channels
+        args.fno_n_modes = (8, 8, 6)
+        args.fno_hidden_channels = 128
+        args.in_channels = args.input_window_size * args.n_target_cols
+
+        if getattr(args, 'forcings_required', False):
+            # 4 forcings features for each output step
+            args.forcings_dim = 4 * args.output_window_size
+            args.in_channels += args.forcings_dim
+
+        args.out_channels = args.output_window_size * args.n_target_cols
+        args.latent_query_dims = (16, 16, 8)
     
     return args
 
 
 def define_fno_interpolate_model(args):
-    """Instantiate FNOInterpolate model with configured parameters."""
-    model = FNOInterpolate(
+    """Instantiate the 3D or space-time FNOInterpolate model with configured parameters."""
+    model_class = SpaceTimeFNOInterpolate if args.space_time else FNOInterpolate
+    model = model_class(
         latent_query_dims=args.latent_query_dims,
         coord_dim=args.coord_dim,
         in_channels=args.in_channels,
@@ -207,7 +232,10 @@ def create_data_loaders(train_ds, val_ds, args):
         shuffle_patches=False,
         seed=None
     )
-    collate_fn = make_collate_fn(args, coord_dim=args.coord_dim)
+    if args.space_time:
+        collate_fn = make_spacetime_collate_fn(args, coord_dim=args.coord_dim)
+    else:
+        collate_fn = make_collate_fn(args, coord_dim=args.coord_dim)
     train_loader = DataLoader(train_ds, batch_sampler=train_sampler, collate_fn=collate_fn)
     val_loader = DataLoader(val_ds, batch_sampler=val_sampler, collate_fn=collate_fn)
     return train_loader, val_loader
@@ -271,7 +299,7 @@ if __name__ == "__main__":
     
     print(f"Dataset sizes - Train: {len(train_ds)}, Val: {len(val_ds)}")
     
-    # Store time_values on args for make_collate_fn
+    # Store time_values on args for make_spacetime_collate_fn
     args._time_values = getattr(train_ds, 'time_values', None) if train_ds is not None else getattr(val_ds, 'time_values', None)
     
     # Create data loaders
@@ -338,8 +366,9 @@ if __name__ == "__main__":
         scheduler=scheduler,
         loss_fn=loss_fn,
         args=args,
-        forward_fn=_fno_4d_forward,
-        extract_core_fn=_fno_4d_extract_core,
+        # The 3D FNO shares the default (GINO-style) forward and core extraction
+        forward_fn=_fno_4d_forward if args.space_time else None,
+        extract_core_fn=_fno_4d_extract_core if args.space_time else None,
     )
 
     # Save final model

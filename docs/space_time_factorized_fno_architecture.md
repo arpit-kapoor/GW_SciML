@@ -1,6 +1,6 @@
 # Space-Time Factorized Fourier Neural Operator (ST-FNO) Architecture
 
-This document provides a comprehensive technical reference and architecture diagrams for the **Space-Time Factorized Fourier Neural Operator** (`FNOInterpolate`), derived directly from the training pipeline and model implementation in this repository.
+This document provides a comprehensive technical reference and architecture diagrams for the **Space-Time Factorized Fourier Neural Operator** (`SpaceTimeFNOInterpolate`), derived directly from the training pipeline and model implementation in this repository.
 
 ---
 
@@ -19,7 +19,7 @@ This document provides a comprehensive technical reference and architecture diag
 
 ## 1. End-to-End Architecture Overview
 
-The `FNOInterpolate` model bridges irregular unstructured meshes (FEFLOW point clouds) and regular grid-based spectral Fourier Neural Operators via a 3-stage process: **Encode (Interpolate) $\to$ Process (Factorized Space-Time FNO) $\to$ Decode (Continuous `grid_sample`)**.
+The `SpaceTimeFNOInterpolate` model bridges irregular unstructured meshes (FEFLOW point clouds) and regular grid-based spectral Fourier Neural Operators via a 3-stage process: **Encode (Interpolate) $\to$ Process (Factorized Space-Time FNO) $\to$ Decode (Continuous `grid_sample`)**.
 
 ```mermaid
 flowchart TD
@@ -251,7 +251,7 @@ flowchart TD
 
 ## 5. Data Flow & Collation Pipeline
 
-In [`src/data/data_utils.py:make_collate_fn`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/data/data_utils.py#L185):
+In [`src/data/data_utils.py:make_spacetime_collate_fn`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/data/data_utils.py#L284):
 
 1. **Spatial Point Assembly**:
    - Each patch contains $N_{\text{core}}$ internal nodes and $N_{\text{ghost}}$ boundary buffer nodes:
@@ -274,12 +274,12 @@ In [`src/data/data_utils.py:make_collate_fn`](file:///Users/arpitkapoor/Projects
 | :--- | :--- | :--- | :--- | :--- |
 | **Input Assembly** | `collate_fn` | Raw nodes & times | $\mathbf{X}: (B, N_{\text{pts}} \cdot T_{\text{in}}, 10)$ | $C_{\text{in}} = 10, T_{\text{in}} = 10, T_{\text{out}} = 10$ |
 | **Grid Encoding** | `_interpolate_to_grid` | $(B, N_{\text{pts}} \cdot T_{\text{in}}, 10)$ | $(B, 10, 24, 24, 12, 10)$ | Nearest-neighbor spatial `cdist` per time slice |
-| **Lifting MLP** | `FNOInterpolate.lifting` | $(B, 10, 24, 24, 12, 10)$ | $(B, 64, 24, 24, 12, 10)$ | 2-layer MLP ($10 \to 64 \to 64$), GELU |
+| **Lifting MLP** | `SpaceTimeFNOInterpolate.lifting` | $(B, 10, 24, 24, 12, 10)$ | $(B, 64, 24, 24, 12, 10)$ | 2-layer MLP ($10 \to 64 \to 64$), GELU |
 | **Spatial Conv (×4)** | `SpatialConv (3D)` | $(B \cdot 10, 64, 24, 24, 12)$ | $(B \cdot 10, 64, 24, 24, 12)$ | 3D RFFT, modes $(10, 10, 6)$, tltorch rank=0.5 |
 | **Temporal Conv (×4)**| `TemporalConv (1D)` | $(B \cdot 6912, 64, 10)$ | $(B \cdot 6912, 64, 10)$ | 1D RFFT, modes $k_t = 6$, tltorch rank=0.5 |
 | **Skip Conv (×4)** | `FNOBlocks.fno_skips` | $(B \cdot 10, 64, 24, 24, 12)$ | $(B \cdot 10, 64, 24, 24, 12)$ | `nn.Conv3d(64, 64, kernel_size=1, bias=False)` |
 | **Grid Decoding** | `_interpolate_from_grid` | $(B, 64, 24, 24, 12, 10)$ | $(B, N_{\text{pts}} \cdot T_{\text{out}}, 64)$ | 3D continuous `F.grid_sample` (trilinear) |
-| **Projection MLP** | `FNOInterpolate.projection` | $(B, 64, N_{\text{pts}} \cdot T_{\text{out}})$ | $(B, N_{\text{pts}} \cdot T_{\text{out}}, 2)$ | 2-layer MLP ($64 \to 128 \to 2$) for (conc, head) |
+| **Projection MLP** | `SpaceTimeFNOInterpolate.projection` | $(B, 64, N_{\text{pts}} \cdot T_{\text{out}})$ | $(B, N_{\text{pts}} \cdot T_{\text{out}}, 2)$ | 2-layer MLP ($64 \to 128 \to 2$) for (conc, head) |
 | **Core Extraction** | `_fno_4d_extract_core` | $(B, N_{\text{pts}} \cdot T_{\text{out}}, 2)$ | $(B, N_{\text{core}}, T_{\text{out}}, 2)$ | Slices first $N_{\text{core}}$ points along spatial dim |
 | **Loss** | `variance_aware_multicol_loss` | $(B, N_{\text{core}}, T_{\text{out}}, 2)$ | Scalar Loss $\mathcal{L}$ | Relative $L_2$ + temporal pushforward $w_t \in [1, 2]$ |
 
@@ -353,9 +353,9 @@ $$
 ## 9. Code References
 
 - **Training Entrypoint**: [`fno_train.py`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/fno_train.py)
-- **Model Definition (`FNOInterpolate`)**: [`src/models/neuralop/fno.py:362`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/models/neuralop/fno.py#L362)
+- **Model Definition (`SpaceTimeFNOInterpolate`)**: [`src/models/neuralop/fno.py:736`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/models/neuralop/fno.py#L736)
 - **Factorized Space-Time Conv**: [`src/models/neuralop/fno.py:15`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/models/neuralop/fno.py#L15)
 - **Spectral Convolution**: [`src/models/neuralop/conv.py:43`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/models/neuralop/conv.py#L43)
-- **Collate Function & 4D Batching**: [`src/data/data_utils.py:185`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/data/data_utils.py#L185)
+- **Collate Function & 4D Batching**: [`src/data/data_utils.py:284`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/data/data_utils.py#L284)
 - **Variance-Aware Multi-Column Loss**: [`src/models/neuralop/losses.py:607`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/src/models/neuralop/losses.py#L607)
 - **Execution Script**: [`hpc/configs/fno/forcing_4d.sh`](file:///Users/arpitkapoor/Projects/groundwater/GW_SciML/hpc/configs/fno/forcing_4d.sh)

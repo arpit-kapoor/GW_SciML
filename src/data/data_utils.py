@@ -182,7 +182,115 @@ def create_patch_datasets(dataset_class, patch_data_dir, coord_transform, obs_tr
     return train_ds, val_ds
 
 
+def _flatten_time(seq):
+    """Flatten [N_points, T, C] to [N_points, T * C] (row-major: t0_c0, t0_c1, t1_c0, ...)."""
+    # Explicit sizes so that empty point sets (e.g. no ghost nodes) reshape cleanly
+    return seq.reshape(seq.shape[0], seq.shape[1] * seq.shape[2])
+
+
 def make_collate_fn(args, coord_dim=3):
+    """
+    Create a collate function that batches samples from the same patch.
+
+    The sampler ensures a batch contains indices from a single `patch_id`.
+    We build one point cloud per batch (core+ghost), a latent grid over its
+    bounding box, and then stack input/output sequences along the batch dim.
+    Time and variable dimensions are flattened into channels, which is the
+    layout used by GINO and the 3D FNOInterpolate. For the space-time
+    factorized FNO use `make_spacetime_collate_fn`.
+
+    If `args.latent_query_dims` has `coord_dim + 1` entries (space-time GINO),
+    the latent grid gets an extra time axis; the point data stays flat.
+
+    Args:
+        args (argparse.Namespace): Argument namespace containing device and latent grid dimensions
+        coord_dim (int): Coordinate dimensionality (default: 3 for 3D)
+
+    Returns:
+        function: Collate function for DataLoader
+    """
+    def collate_fn(batch_samples):
+        """
+        Collate function that combines samples into a batch.
+
+        Args:
+            batch_samples (list): List of sample dictionaries from the same patch
+
+        Returns:
+            dict: Batch dictionary with combined point cloud and sequences
+        """
+        # All samples in the batch come from the same patch (by sampler design)
+        core_coords = batch_samples[0]['core_coords']
+        ghost_coords = batch_samples[0]['ghost_coords']
+        patch_id = batch_samples[0]['patch_id']  # Extract patch ID from first sample
+
+        # Single point cloud per batch: [N_core+N_ghost, coord_dim]
+        # Concatenate core and ghost points to form complete spatial domain
+        point_coords = torch.concat([core_coords, ghost_coords], dim=0).float()
+
+        # Create latent queries grid over the per-batch bounding box
+        # This provides a regular grid for the FNO component
+        coords_min = torch.min(point_coords, dim=0).values
+        coords_max = torch.max(point_coords, dim=0).values
+        latent_query_arr = [
+            torch.linspace(coords_min[i], coords_max[i], args.latent_query_dims[i], device=args.device)
+            for i in range(coord_dim)
+        ]
+        if len(args.latent_query_dims) == coord_dim + 1:
+            # Space-time GINO: extend the grid with a normalized time axis,
+            # giving a [Qx, Qy, Qz, Qt, coord_dim + 1] tensor
+            latent_query_arr.append(
+                torch.linspace(0, 1, args.latent_query_dims[coord_dim], device=args.device)
+            )
+        # Create meshgrid and stack to get [Qx, Qy, Qz, coord_dim] tensor
+        latent_queries = torch.stack(torch.meshgrid(*latent_query_arr, indexing='ij'), dim=-1)
+
+        # Build batched sequences: concat along points (dim=0), batch along dim=0
+        x_list, y_list = [], []
+        for sample in batch_samples:
+            # Observations over the input window: [N_points, T_in * C_obs]
+            sample_input = _flatten_time(
+                torch.concat([sample['core_in_obs'], sample['ghost_in_obs']], dim=0)
+            )
+            if getattr(args, 'forcings_required', False):
+                # Forcings over the output window: [N_points, T_out * C_forc]
+                sample_forcings = _flatten_time(
+                    torch.concat([sample['core_out_forcings'], sample['ghost_out_forcings']], dim=0)
+                )
+                sample_input = torch.cat([sample_input, sample_forcings], dim=-1)
+            # Targets over the output window: [N_points, T_out * C_obs]
+            sample_output = _flatten_time(
+                torch.concat([sample['core_out'], sample['ghost_out']], dim=0)
+            )
+            x_list.append(sample_input.float().unsqueeze(0))
+            y_list.append(sample_output.float().unsqueeze(0))
+
+        # Stack all sequences into batch tensors
+        x = torch.cat(x_list, dim=0)  # [B, N_points, input_channels]
+        y = torch.cat(y_list, dim=0)  # [B, N_points, output_channels]
+
+        # Extract weights (same for all samples in the batch since they're from the same patch)
+        weights = batch_samples[0]['weights']  # [N_core]
+        if not isinstance(weights, torch.Tensor):
+            weights = torch.from_numpy(weights)
+        weights = weights.float()
+
+        # Return batch dictionary
+        batch = {
+            'patch_id': patch_id,             # Patch identifier for tracking results
+            'point_coords': point_coords,      # [N_points, coord_dim]
+            'latent_queries': latent_queries,  # [Qx, Qy, Qz, coord_dim]
+            'x': x,                           # [B, N_points, input_channels]
+            'y': y,                           # [B, N_points, output_channels]
+            'core_len': len(core_coords),     # Number of core points (for loss masking)
+            'weights': weights,               # [N_core] - pre-computed variance-aware weights
+        }
+        return batch
+
+    return collate_fn
+
+
+def make_spacetime_collate_fn(args, coord_dim=3):
     """
     Create a collate function for the 4D space-time FNO architecture.
 
@@ -343,15 +451,15 @@ def make_collate_fn(args, coord_dim=3):
 
 def reshape_multi_col_predictions(predictions, output_window_size, n_target_cols):
     """
-    Reshape predictions from the 4D FNO output format.
+    Reshape predictions to separate the spatial, temporal and variable dimensions.
 
-    The model outputs (B, N_pts × T_out, C_obs) which is then concatenated across
-    batches to (N_samples, N_pts × T_out, C_obs). This function reshapes to
-    separate the spatial and temporal dimensions.
+    Two layouts are supported: the space-time FNO outputs
+    (B, N_pts × T_out, C_obs), while GINO and the 3D FNOInterpolate output
+    (B, N_pts, T_out × C_obs).
 
     Args:
-        predictions: Array of shape [N_samples, N_pts × T_out, n_target_cols]
-            OR [N_samples, N_pts, output_window_size * n_target_cols] (legacy)
+        predictions: Array of shape [N_samples, N_pts × T_out, n_target_cols] (space-time)
+            OR [N_samples, N_pts, output_window_size * n_target_cols] (flat)
         output_window_size: Number of output timesteps
         n_target_cols: Number of target columns
 
@@ -364,12 +472,12 @@ def reshape_multi_col_predictions(predictions, output_window_size, n_target_cols
     last_dim = predictions.shape[2]
 
     if last_dim == n_target_cols:
-        # New format: (N_samples, N_pts × T_out, C_obs)
+        # Space-time format: (N_samples, N_pts × T_out, C_obs)
         # Total points = N_pts × T_out, so N_pts = total_pts / T_out
         n_points = total_pts // output_window_size
         reshaped = predictions.reshape(n_samples, n_points, output_window_size, n_target_cols)
     else:
-        # Legacy format: (N_samples, N_pts, T_out × C_obs)
+        # Flat format: (N_samples, N_pts, T_out × C_obs)
         n_points = total_pts
         if last_dim != output_window_size * n_target_cols:
             raise ValueError(

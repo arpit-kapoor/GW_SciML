@@ -4,12 +4,13 @@ Neural operator training (GINO and FNO) for 3D variable-density groundwater mode
 
 ## Overview
 
-This repository contains training and inference scripts for two neural operator architectures:
+This repository contains training and inference scripts for three neural operator architectures:
 
 - **GINO** (Geometry-Informed Neural Operator) - Uses graph-based message passing with point cloud data
-- **FNO** (Fourier Neural Operator) - Uses spectral methods with interpolation between point clouds and regular grids
+- **FNO** (Fourier Neural Operator) - Uses spectral methods with interpolation between point clouds and regular grids; time steps are flattened into channels on a 3D latent grid
+- **Space-Time Factorized FNO** - FNO on a 4D (X, Y, Z, T) latent grid with factorized spatial/temporal spectral convolutions (`fno_train.py --space-time`). GINO can use the same factorized blocks in its latent space (`gino_train.py --space-time`)
 
-Both models support multi-variable predictions for groundwater variables including mass concentration, hydraulic head, and pressure.
+All models support multi-variable predictions for groundwater variables including mass concentration, hydraulic head, and pressure.
 
 ## Requirements
 
@@ -185,6 +186,7 @@ Pre-configured training setups are located in `hpc/configs/{gino,fno}/`:
 - **updated_lowres** - Low-resolution training (`--resolution-ratio 0.167`, forcings enabled)
 - **var_loss** - Variance-aware concentration-focused training
 - **local_testing** - Lightweight smoke-test config
+- **space_time** - `standard` with the space-time factorized FNO in the latent space (`--space-time`)
 - **mass_only** - Single-target (`mass_concentration`) training
 
 ### FNO Configs
@@ -192,6 +194,8 @@ Pre-configured training setups are located in `hpc/configs/{gino,fno}/`:
 - **default** - Standard training (250 epochs, batch size 256, 2 variables)
 - **forcing** - Forcings-enabled training/prediction pipeline
 - **var_loss** - Variance-aware loss with concentration focus (λ=0.3)
+- **forcing_4d** - Space-time factorized FNO (`--space-time`), cosine schedule with warmup
+- **forcing_v2** - Space-time factorized FNO (`--space-time`), exponential schedule
 
 ### Submission Modes
 
@@ -237,6 +241,7 @@ Pre-configured training setups are located in `hpc/configs/{gino,fno}/`:
 |----------|-------------|---------|
 | `--padding-mode` | `grid_sample` padding mode (`zeros`, `border`, `reflection`) | `border` |
 | `--align-corners` | Enable corner alignment in interpolation | False |
+| `--space-time` | Train the space-time factorized (4D) FNO instead of the 3D FNO; prediction infers the variant from the checkpoint | False |
 
 ### Inference-Specific Arguments
 

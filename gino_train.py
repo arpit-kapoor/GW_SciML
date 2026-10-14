@@ -79,6 +79,10 @@ def add_gino_model_args(parser):
                              'Also overrides the value read from a checkpoint when '
                              'resuming training, so the model is re-instantiated '
                              'with this radius rather than the one saved in the checkpoint.')
+    parser.add_argument('--space-time', action='store_true', default=False,
+                        dest='space_time',
+                        help='Use the space-time factorized (4D) FNO in the latent space '
+                             'instead of the 3D FNO')
     return parser
 
 
@@ -93,19 +97,26 @@ def define_model_parameters(args):
         
     args.in_gno_out_channels = args.input_window_size * args.n_target_cols
     if args.forcings_required:
-        # Include boundary conditions for the output steps (4 features * 20 steps)
+        # 4 forcings features for each output step
         args.forcings_dim = 4 * args.output_window_size
         args.in_gno_out_channels += args.forcings_dim
-        
+
     args.in_gno_channel_mlp_layers = [32, 64, 32]
     args.fno_n_layers = 4
-    args.fno_n_modes = (8, 8, 6, 8)
     args.fno_hidden_channels = 128
     args.lifting_channels = 64
     args.out_gno_channel_mlp_layers = [32, 64, 32]
     args.projection_channel_ratio = 2
-    args.out_channels = args.n_target_cols
-    args.latent_query_dims = (16, 16, 8, args.output_window_size)
+    if args.space_time:
+        # The latent state is extruded over the output window and processed by the
+        # factorized space-time FNO; each latent time slice decodes one output step.
+        args.fno_n_modes = (8, 8, 6, 8)
+        args.out_channels = args.n_target_cols
+        args.latent_query_dims = (16, 16, 8, args.output_window_size)
+    else:
+        args.fno_n_modes = (8, 8, 6)
+        args.out_channels = args.output_window_size * args.n_target_cols
+        args.latent_query_dims = (16, 16, 8)
     return args
 
 
@@ -337,8 +348,9 @@ if __name__ == "__main__":
 
 
     # Compute mean and std for inverse normalization
-    obs_mean = obs_transform.mean[args.target_col_indices].cpu().numpy()
-    obs_std = obs_transform.std[args.target_col_indices].cpu().numpy()
+    # Outputs are laid out as [t0_c0, t0_c1, t1_c0, ...], so repeat the per-column stats for each output step
+    obs_mean = np.tile(obs_transform.mean[args.target_col_indices].cpu().numpy(), args.output_window_size)
+    obs_std = np.tile(obs_transform.std[args.target_col_indices].cpu().numpy(), args.output_window_size)
     print(f"Applying inverse normalization to predictions and targets using mean: {obs_mean}, std: {obs_std}")
     
     print("Processing Validation Set...")

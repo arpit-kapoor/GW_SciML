@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-# FNOInterpolate forcings configuration - aligned with GINO dataset structure
+# Space-time factorized FNO (4D) forcings configuration
 
 TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
@@ -24,6 +24,7 @@ TRAIN_ARGS="
 --resolution-ratio 0.3
 --min-resolution-ratio 0.20
 --forcings-required
+--space-time
 --device auto
 "
 

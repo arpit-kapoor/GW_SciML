@@ -17,11 +17,12 @@ from src.data.data_utils import (
     calculate_obs_transform,
     create_patch_datasets,
     make_collate_fn,
+    make_spacetime_collate_fn,
     reshape_multi_col_predictions,
     calculate_forcings_transform,
 )
 from src.data.patch_dataset_multi_col import GWPatchDatasetMultiCol
-from src.models.neuralop.fno import FNOInterpolate
+from src.models.neuralop.fno import FNOInterpolate, SpaceTimeFNOInterpolate
 from src.inference import (
     setup_inference_arguments,
     load_checkpoint,
@@ -60,6 +61,11 @@ def add_fno_model_args(parser):
     return parser
 
 
+def is_space_time_checkpoint(saved_args):
+    """Whether the checkpoint holds the space-time factorized FNO (4D latent grid) or the 3D FNO."""
+    return len(saved_args.latent_query_dims) == saved_args.coord_dim + 1
+
+
 def configure_model_parameters_from_checkpoint(checkpoint):
     """Extract model configuration from checkpoint."""
     saved_args = checkpoint['args']
@@ -79,16 +85,19 @@ def define_fno_from_checkpoint(checkpoint, device):
     """
     Create FNOInterpolate model instance from checkpoint configuration.
     
+    The variant (3D or space-time factorized) is inferred from the checkpoint.
+    
     Args:
         checkpoint (dict): Loaded checkpoint dictionary
         device (str): Device to load model on
         
     Returns:
-        FNOInterpolate: Instantiated FNOInterpolate model
+        FNOInterpolate or SpaceTimeFNOInterpolate: Instantiated model
     """
     saved_args = checkpoint['args']
+    model_class = SpaceTimeFNOInterpolate if is_space_time_checkpoint(saved_args) else FNOInterpolate
     
-    model = FNOInterpolate(
+    model = model_class(
         # Coordinate and channel configuration
         coord_dim=saved_args.coord_dim,
         in_channels=saved_args.in_channels,
@@ -215,7 +224,7 @@ def main():
         print(f"Train dataset length: {len(train_ds)}")
     print(f"Val dataset length: {len(val_ds)}")
     
-    # Store time_values on args for make_collate_fn
+    # Store time_values on args for make_spacetime_collate_fn
     args._time_values = getattr(train_ds, 'time_values', None) if train_ds is not None else getattr(val_ds, 'time_values', None)
     
     # Create model
@@ -228,17 +237,26 @@ def main():
     # Create collate function
     args.coord_dim = checkpoint['args'].coord_dim
     args.latent_query_dims = checkpoint['args'].latent_query_dims
-    collate_fn = make_collate_fn(args, coord_dim=args.coord_dim)
+    space_time = is_space_time_checkpoint(checkpoint['args'])
+    if space_time:
+        collate_fn = make_spacetime_collate_fn(args, coord_dim=args.coord_dim)
+    else:
+        collate_fn = make_collate_fn(args, coord_dim=args.coord_dim)
+    model_label = "space-time FNO" if space_time else "3D FNO"
     
     # Generate predictions (standard teacher-forcing OR rolling autoregressive mode)
     if args.rolling_sequence:
         print("\n" + "="*60)
-        print("EVALUATION MODE: Rolling Sequence (Initial-Value Problem) for 4D FNO")
+        print(f"EVALUATION MODE: Rolling Sequence (Initial-Value Problem) for {model_label}")
+        print("  - First window  : ground-truth inputs")
+        print("  - Later windows : model outputs rolled into input buffer")
+        print("  - Ghost points  : always use ground-truth (boundary cond.)")
         print("="*60)
-        _predict_fn = functools.partial(_fno_4d_rolling_predict, obs_transform=obs_transform)
+        _rolling_fn = _fno_4d_rolling_predict if space_time else generate_rolling_predictions
+        _predict_fn = functools.partial(_rolling_fn, obs_transform=obs_transform)
     else:
-        print("\nEVALUATION MODE: Standard (Teacher Forcing) for 4D FNO")
-        _predict_fn = _fno_4d_predict
+        print(f"\nEVALUATION MODE: Standard (Teacher Forcing) for {model_label}")
+        _predict_fn = _fno_4d_predict if space_time else generate_predictions
 
     if args.val_only:
         print("\nDataset scope: VAL ONLY (--val-only flag set, skipping train set)")
@@ -375,12 +393,10 @@ def _fno_4d_predict(model, dataset, args, dataset_name, collate_fn):
             if not model.training:
                 model = unwrap_dp(model)
                 
-            input_geom_b, latent_queries_b, output_queries_b = broadcast_static_inputs_for_dp(
-                input_coords, latent_queries, batch_size, output_queries=output_coords
-            )
-            
-            outputs = model(input_geom_b, latent_queries_b, output_queries_b, x)
-            
+            # Coordinates and latent grid are shared by the whole batch, and the
+            # unwrapped model takes them without a batch dimension
+            outputs = model(input_coords, latent_queries, output_coords, x)
+
             # Extract core points
             y = batch['y'].to(args.device).float()
             core_len = batch['core_len']

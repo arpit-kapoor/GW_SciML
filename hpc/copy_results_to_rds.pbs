@@ -1,0 +1,59 @@
+#!/bin/bash
+#PBS -P no50
+#PBS -N results-to-rds
+#PBS -l walltime=10:00:00
+#PBS -l ncpus=1
+#PBS -l mem=8GB
+#PBS -W umask=022
+#PBS -q copyq
+#PBS -l wd
+#PBS -lstorage=scratch/yl75
+#PBS -j oe
+#PBS -o logs/results-to-rds.out
+
+# Tar each results directory (uncompressed: .npy/.pth data barely compresses)
+# and transfer it to RDS with sftp. Each tar is removed from scratch only after
+# its sftp transfer succeeds; set KEEP_TARS=1 to keep them.
+#
+# Submit from the repo root (logs/ must exist):  mkdir -p logs && qsub hpc/copy_results_to_rds.pbs
+# Requires RDSUSER and RDSPROJECT in the environment (qsub -V or exported in ~/.bashrc).
+
+set -euo pipefail
+
+# RDS:
+remote_user=${RDSUSER}
+remote_host=research-data-ext.sydney.edu.au
+
+# NOTE: the trailing slash means the files are placed inside this directory.
+# The directory must already exist on RDS.
+remote_path=/rds/${RDSPROJECT}/results/groundwater/
+
+# Gadi:
+results_parent_path=/scratch/yl75/${USER}/results/groundwater
+results_dirnames=(GINO GINO_predictions FNO FNO_predictions)
+KEEP_TARS=${KEEP_TARS:-0}
+
+cd "${results_parent_path}"
+
+for results_dirname in "${results_dirnames[@]}"; do
+    filename=${results_dirname}.tar
+
+    if [[ ! -d ${results_dirname} ]]; then
+        echo "WARNING: ${results_parent_path}/${results_dirname} not found, skipping"
+        continue
+    fi
+
+    echo "[$(date '+%F %T')] Creating ${results_parent_path}/${filename}"
+    tar -cf "${filename}" "${results_dirname}"
+    ls -lh "${filename}"
+
+    echo "[$(date '+%F %T')] Transferring ${filename} to ${remote_host}:${remote_path}"
+    sftp -b - "${remote_user}@${remote_host}:${remote_path}" <<< "put ${filename}"
+    echo "[$(date '+%F %T')] Transfer of ${filename} complete"
+
+    if [[ ${KEEP_TARS} -eq 0 ]]; then
+        rm -f "${filename}"
+    fi
+done
+
+echo "[$(date '+%F %T')] All transfers complete."

@@ -5,9 +5,9 @@ TRAIN_ARGS="
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head
 --epochs 100
---batch-size 32
---input-window-size 10
---output-window-size 20
+--batch-size 256
+--input-window-size 5
+--output-window-size 5
 --learning-rate 1e-3
 --scheduler-type exponential
 --lr-scheduler-interval 10
@@ -27,9 +27,8 @@ PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --batch-size 128
 --device auto
 --sampling-strategy static
---gno-radius 0.28
+--gno-radius 0.21
 --rolling-sequence
---val-stride 20
 --val-only
 "
 
