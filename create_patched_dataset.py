@@ -5,14 +5,21 @@ This script combines two steps into one terminal-friendly pipeline:
 1) Build patch metadata and write ``patches.json``.
 2) Build per-patch numpy arrays under ``patch_all_ts`` (or custom output dir).
 
+Patches are KMeans clusters within groups of slices. Neighbours and ghost nodes come from the mesh
+connectivity, rebuilt from the prismatic FEFLOW mesh: a Delaunay triangulation of one slice repeated on every
+slice, plus vertical edges between consecutive slices. The ghost nodes of a patch are all non-core nodes within
+``ghost_hops`` mesh edges of its core.
+
 The output format is compatible with existing training/inference loaders.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
+import shutil
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -21,7 +28,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.spatial import cKDTree
+from scipy import sparse
+from scipy.spatial import Delaunay
 from sklearn.cluster import KMeans
 from tqdm import tqdm
 
@@ -44,12 +52,12 @@ class PipelineConfig:
     patches_json_name: str
     n_patches: int
     slice_split: int
-    ghost_points_ratio: float
-    n_ghost_points: int | None
-    neighbour_k: int
+    ghost_hops: int
+    max_edge_factor: float
     max_workers: int
     use_normalized_coords_for_patching: bool
     clip_negative_mass_concentration: bool
+    metadata_only: bool
 
     @property
     def raw_data_dir(self) -> str:
@@ -82,13 +90,16 @@ def parse_args() -> PipelineConfig:
 
     parser.add_argument("--n-patches", type=int, default=20)
     parser.add_argument("--slice-split", type=int, default=4)
-    parser.add_argument("--ghost-points-ratio", type=float, default=0.05)
-    parser.add_argument("--n-ghost-points", type=int, default=None)
-    parser.add_argument("--neighbour-k", type=int, default=10)
+    parser.add_argument("--ghost-hops", type=int, default=2,
+                        help="Ghost nodes are all non-core nodes within this many mesh edges of the patch core")
+    parser.add_argument("--max-edge-factor", type=float, default=3.0,
+                        help="Drop Delaunay edges longer than this multiple of the median edge length "
+                             "(removes edges across concave parts of the domain boundary)")
 
     parser.add_argument("--max-workers", type=int, default=min(12, os.cpu_count() or 1))
     parser.add_argument("--use-normalized-coords-for-patching", action="store_true")
     parser.add_argument("--no-clip-negative-mass-concentration", action="store_true")
+    parser.add_argument("--metadata-only", action="store_true", help="Write the patch metadata JSON and skip the arrays")
 
     args = parser.parse_args()
 
@@ -96,12 +107,10 @@ def parse_args() -> PipelineConfig:
         raise ValueError("--n-patches must be > 0")
     if args.slice_split <= 0:
         raise ValueError("--slice-split must be > 0")
-    if args.ghost_points_ratio < 0:
-        raise ValueError("--ghost-points-ratio must be >= 0")
-    if args.n_ghost_points is not None and args.n_ghost_points < 0:
-        raise ValueError("--n-ghost-points must be >= 0 when provided")
-    if args.neighbour_k < 2:
-        raise ValueError("--neighbour-k must be >= 2 (includes self neighbor)")
+    if args.ghost_hops < 0:
+        raise ValueError("--ghost-hops must be >= 0")
+    if args.max_edge_factor <= 0:
+        raise ValueError("--max-edge-factor must be > 0")
     if args.max_workers <= 0:
         raise ValueError("--max-workers must be > 0")
 
@@ -113,12 +122,12 @@ def parse_args() -> PipelineConfig:
         patches_json_name=args.patches_json_name,
         n_patches=args.n_patches,
         slice_split=args.slice_split,
-        ghost_points_ratio=args.ghost_points_ratio,
-        n_ghost_points=args.n_ghost_points,
-        neighbour_k=args.neighbour_k,
+        ghost_hops=args.ghost_hops,
+        max_edge_factor=args.max_edge_factor,
         max_workers=args.max_workers,
         use_normalized_coords_for_patching=args.use_normalized_coords_for_patching,
         clip_negative_mass_concentration=not args.no_clip_negative_mass_concentration,
+        metadata_only=args.metadata_only,
     )
 
 
@@ -159,6 +168,69 @@ def _normalize_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return out
 
 
+def build_mesh_adjacency(
+    x: np.ndarray,
+    y: np.ndarray,
+    slice_id: np.ndarray,
+    max_edge_factor: float = 3.0,
+) -> sparse.csr_matrix:
+    """Node adjacency of a prismatic mesh (every slice has the same nodes in XY).
+
+    Horizontal edges come from a Delaunay triangulation of one slice, without edges longer than
+    ``max_edge_factor`` times the median edge length, and are repeated on every slice. Vertical edges join
+    the same column in consecutive slices.
+
+    Returns:
+        Symmetric boolean CSR matrix of shape [N, N] in the row order of the inputs.
+    """
+    slices = np.sort(np.unique(slice_id))
+    slice_rows = [np.where(slice_id == s)[0] for s in slices]
+    n_per_slice = {len(rows) for rows in slice_rows}
+    if len(n_per_slice) != 1:
+        raise ValueError(f"Mesh is not prismatic: nodes per slice differ ({sorted(n_per_slice)})")
+
+    # columns[k, c]: row of column c in slice k, with columns ordered by (X, Y)
+    columns = np.stack([rows[np.lexsort((y[rows], x[rows]))] for rows in slice_rows])
+    xy = np.stack([x[columns[0]], y[columns[0]]], axis=1)
+    for k in range(1, len(slices)):
+        xy_k = np.stack([x[columns[k]], y[columns[k]]], axis=1)
+        if not np.allclose(xy_k, xy, rtol=0.0, atol=1e-6):
+            raise ValueError(f"Mesh is not prismatic: XY positions of slice {slices[k]} differ from slice {slices[0]}")
+
+    simplices = Delaunay(xy).simplices
+    edges = np.concatenate([simplices[:, [0, 1]], simplices[:, [1, 2]], simplices[:, [2, 0]]])
+    edges = np.unique(np.sort(edges, axis=1), axis=0)
+    lengths = np.linalg.norm(xy[edges[:, 0]] - xy[edges[:, 1]], axis=1)
+    edges = edges[lengths <= max_edge_factor * np.median(lengths)]
+
+    src = [columns[:, edges[:, 0]].ravel(), columns[:-1].ravel()]
+    dst = [columns[:, edges[:, 1]].ravel(), columns[1:].ravel()]
+    src, dst = np.concatenate(src), np.concatenate(dst)
+    n = x.shape[0]
+    adjacency = sparse.coo_matrix(
+        (np.ones(2 * len(src), dtype=bool), (np.concatenate([src, dst]), np.concatenate([dst, src]))), shape=(n, n)
+    ).tocsr()
+    return adjacency
+
+
+def ghost_rings(adjacency: sparse.csr_matrix, core_mask: np.ndarray, n_hops: int) -> tuple[np.ndarray, np.ndarray]:
+    """Nodes within ``n_hops`` edges of a core set, excluding the core.
+
+    Returns:
+        (rows, hops): rows of the ghost nodes ordered by hop then row, and the hop distance of each.
+    """
+    hop = np.full(core_mask.shape[0], -1, dtype=int)
+    hop[core_mask] = 0
+    frontier = core_mask.astype(np.float32)
+    for h in range(1, n_hops + 1):
+        reached = (adjacency @ frontier > 0) & (hop < 0)
+        hop[reached] = h
+        frontier = reached.astype(np.float32)
+    rows = np.where(hop > 0)[0]
+    rows = rows[np.argsort(hop[rows], kind="stable")]
+    return rows, hop[rows]
+
+
 def create_patches(
     x: np.ndarray,
     y: np.ndarray,
@@ -166,9 +238,8 @@ def create_patches(
     slice_id: np.ndarray,
     n_patches: int,
     slice_split: int,
-    ghost_points_ratio: float,
-    n_ghost_points: int | None,
-    neighbour_k: int,
+    adjacency: sparse.csr_matrix,
+    ghost_hops: int,
 ) -> tuple[np.ndarray, np.ndarray, dict[int, set[int]], dict[int, dict[int, np.ndarray]]]:
     slices = np.sort(np.unique(slice_id))
     slices_split = np.array_split(slices, slice_split)
@@ -193,62 +264,16 @@ def create_patches(
         patch_ids[slice_idx] = cluster_labels + patch_id_offset
         patch_id_offset += n_patches_per_slice
 
-    coords_all = np.stack([x, y, z], axis=1)
-    unique_patches = np.unique(patch_ids)
-    patch_indices = {pid: np.where(patch_ids == pid)[0] for pid in unique_patches}
-
-    tree = cKDTree(coords_all)
+    # Ghost nodes: every node within ghost_hops mesh edges of the core, grouped by the patch that owns it.
+    # The neighbours of a patch are the patches its ghost nodes belong to.
     patch_neighbours: dict[int, set[int]] = defaultdict(set)
-    for pid in unique_patches:
-        idx = patch_indices[pid]
-        k_val = min(neighbour_k, len(coords_all))
-        _, nbrs = tree.query(coords_all[idx], k=k_val)
-        nbrs_2d = np.atleast_2d(nbrs)
-        for row, nbr_row in zip(idx, nbrs_2d):
-            for nbr_idx in np.atleast_1d(nbr_row):
-                if nbr_idx == row:
-                    continue
-                nbr_pid = patch_ids[nbr_idx]
-                if nbr_pid != pid:
-                    patch_neighbours[int(pid)].add(int(nbr_pid))
-
     patch_ghost_points: dict[int, dict[int, np.ndarray]] = defaultdict(dict)
-    dynamic_n_ghost_points = n_ghost_points is None
-
-    for pid in unique_patches:
-        idx = patch_indices[pid]
-        coords_patch = coords_all[idx]
-
-        current_n_ghost = n_ghost_points
-        if dynamic_n_ghost_points:
-            current_n_ghost = max(1, int(len(idx) * ghost_points_ratio))
-
-        for nbr_pid in patch_neighbours[int(pid)]:
-            nbr_idx = patch_indices[nbr_pid]
-            coords_nbr = coords_all[nbr_idx]
-            nbr_tree = cKDTree(coords_nbr)
-
-            k_val = min(current_n_ghost, len(nbr_idx))
-            dists, ghost_indices = nbr_tree.query(coords_patch, k=k_val)
-
-            dists_flat = dists.flatten() if np.ndim(dists) > 1 else np.asarray(dists)
-            ghost_indices_flat = (
-                ghost_indices.flatten() if np.ndim(ghost_indices) > 1 else np.asarray(ghost_indices)
-            )
-
-            sorted_idx = np.argsort(ghost_indices_flat)
-            ghost_indices_sorted = ghost_indices_flat[sorted_idx]
-            dists_sorted = dists_flat[sorted_idx]
-
-            unique_ghost_indices, unique_pos = np.unique(ghost_indices_sorted, return_index=True)
-            if len(unique_ghost_indices) > 0:
-                unique_dists = dists_sorted[unique_pos]
-                dist_order = np.argsort(unique_dists)
-                selected_indices = unique_ghost_indices[dist_order][:current_n_ghost]
-            else:
-                selected_indices = np.array([], dtype=int)
-
-            patch_ghost_points[int(pid)][int(nbr_pid)] = np.array(nbr_idx)[selected_indices]
+    for pid in np.unique(patch_ids):
+        ghost_rows, _ = ghost_rings(adjacency, patch_ids == pid, ghost_hops)
+        owners = patch_ids[ghost_rows]
+        for nbr_pid in np.unique(owners):
+            patch_neighbours[int(pid)].add(int(nbr_pid))
+            patch_ghost_points[int(pid)][int(nbr_pid)] = ghost_rows[owners == nbr_pid]
 
     return patch_ids, slice_groups, patch_neighbours, patch_ghost_points
 
@@ -258,6 +283,15 @@ def build_patch_metadata(ref_df: pd.DataFrame, cfg: PipelineConfig) -> dict[str,
     if cfg.use_normalized_coords_for_patching:
         patch_input_df = _normalize_columns(ref_df, COORD_COLS)
 
+    # Connectivity depends only on the mesh, so it is built from the raw coordinates
+    adjacency = build_mesh_adjacency(
+        x=ref_df[COORD_COLS[0]].to_numpy(),
+        y=ref_df[COORD_COLS[1]].to_numpy(),
+        slice_id=ref_df[SLICE_COL].to_numpy(),
+        max_edge_factor=cfg.max_edge_factor,
+    )
+    print(f"Mesh adjacency: {ref_df.shape[0]} nodes, {adjacency.nnz // 2} edges")
+
     patch_ids, slice_groups, patch_neighbours, patch_ghost_points = create_patches(
         x=patch_input_df[COORD_COLS[0]].to_numpy(),
         y=patch_input_df[COORD_COLS[1]].to_numpy(),
@@ -265,9 +299,8 @@ def build_patch_metadata(ref_df: pd.DataFrame, cfg: PipelineConfig) -> dict[str,
         slice_id=patch_input_df[SLICE_COL].to_numpy(),
         n_patches=cfg.n_patches,
         slice_split=cfg.slice_split,
-        ghost_points_ratio=cfg.ghost_points_ratio,
-        n_ghost_points=cfg.n_ghost_points,
-        neighbour_k=cfg.neighbour_k,
+        adjacency=adjacency,
+        ghost_hops=cfg.ghost_hops,
     )
 
     patch_data: dict[str, dict[str, Any]] = {}
@@ -293,12 +326,22 @@ def build_patch_metadata(ref_df: pd.DataFrame, cfg: PipelineConfig) -> dict[str,
             "ghost_nodes": [int(n) for n in ghost_nodes],
             "core_nodes": [int(n) for n in core_nodes.tolist()],
         }
+        print(
+            f"Patch {int(patch_id)}: {len(core_nodes)} core, {len(ghost_nodes)} ghost, "
+            f"neighbours {patch_data[str(int(patch_id))]['neighbour_patches']}"
+        )
 
     return patch_data
 
 
 def save_patch_metadata(patch_data: dict[str, dict[str, Any]], out_path: str) -> None:
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    if os.path.exists(out_path):
+        # Keep the first backup made on a given day rather than overwriting it on a rerun
+        backup_path = f"{out_path}.bak_{datetime.date.today():%Y%m%d}"
+        if not os.path.exists(backup_path):
+            shutil.copy2(out_path, backup_path)
+            print(f"Backed up existing patch metadata to {backup_path}")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(patch_data, f, indent=2)
 
@@ -388,15 +431,23 @@ def create_patch_arrays(
         core_coords = first_coords_df.iloc[core_idx][COORD_COLS].to_numpy()
         ghost_coords = first_coords_df.iloc[ghost_idx][COORD_COLS].to_numpy()
 
+        # Write to a temporary directory and swap it in, so an interrupted run never leaves a patch
+        # with a mix of old and new files
         patch_dir_path = os.path.join(cfg.patch_data_dir, f"patch_{int(patch_id_str):03d}")
-        os.makedirs(patch_dir_path, exist_ok=True)
+        tmp_dir_path = f"{patch_dir_path}.tmp"
+        shutil.rmtree(tmp_dir_path, ignore_errors=True)
+        os.makedirs(tmp_dir_path)
 
-        np.save(os.path.join(patch_dir_path, "core_obs.npy"), core_patch_data)
-        np.save(os.path.join(patch_dir_path, "ghost_obs.npy"), ghost_patch_data)
-        np.save(os.path.join(patch_dir_path, "core_coords.npy"), core_coords)
-        np.save(os.path.join(patch_dir_path, "ghost_coords.npy"), ghost_coords)
-        np.save(os.path.join(patch_dir_path, "core_forcings.npy"), core_forcings_data)
-        np.save(os.path.join(patch_dir_path, "ghost_forcings.npy"), ghost_forcings_data)
+        np.save(os.path.join(tmp_dir_path, "core_obs.npy"), core_patch_data)
+        np.save(os.path.join(tmp_dir_path, "ghost_obs.npy"), ghost_patch_data)
+        np.save(os.path.join(tmp_dir_path, "core_coords.npy"), core_coords)
+        np.save(os.path.join(tmp_dir_path, "ghost_coords.npy"), ghost_coords)
+        np.save(os.path.join(tmp_dir_path, "core_forcings.npy"), core_forcings_data)
+        np.save(os.path.join(tmp_dir_path, "ghost_forcings.npy"), ghost_forcings_data)
+
+        if os.path.exists(patch_dir_path):
+            shutil.rmtree(patch_dir_path)
+        os.rename(tmp_dir_path, patch_dir_path)
 
 
 def main() -> None:
@@ -422,6 +473,10 @@ def main() -> None:
     patch_metadata = build_patch_metadata(ref_df, cfg)
     save_patch_metadata(patch_metadata, cfg.patches_json_path)
     print(f"Saved patch metadata for {len(patch_metadata)} patches to {cfg.patches_json_path}")
+
+    if cfg.metadata_only:
+        print("\n--metadata-only: skipping patch arrays.")
+        return
 
     print("\nStep 2/2: Building patch arrays...")
     create_patch_arrays(patch_metadata, ref_df, ts_files, cfg)

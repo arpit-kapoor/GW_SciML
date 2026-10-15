@@ -4,8 +4,8 @@ TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head
---epochs 500
---batch-size 256
+--epochs 300
+--batch-size 168
 --input-window-size 5
 --output-window-size 5
 --learning-rate 1e-3
