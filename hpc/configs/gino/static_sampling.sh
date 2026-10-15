@@ -4,11 +4,11 @@ TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head 
---epochs 400
---batch-size 512
+--epochs 450
+--batch-size 640 
 --input-window-size 5 
 --output-window-size 1 
---learning-rate 8e-4 
+--learning-rate 1e-3 
 --scheduler-type exponential 
 --lr-scheduler-interval 20
 --lr-gamma 0.98
@@ -30,6 +30,6 @@ PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --gno-radius 0.24
 "
 
-RESOLUTION_RATIOS="1.0"
+RESOLUTION_RATIOS="0.4 1.0"
 
 CHECKPOINT="latest_checkpoint.pth"

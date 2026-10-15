@@ -294,7 +294,24 @@ def main():
     val_results['targets'] = reshape_multi_col_predictions(
         val_results['targets'], args.output_window_size, n_target_cols
     )
-    
+
+    # Keep the output steps the sequence advances by between windows (the first `stride` steps of each window,
+    # at most the whole window) and lay them out as one continuous series [T, N_pts, 1, C]: stride 1 keeps the
+    # first step of each window, stride == output window keeps every step. Saved arrays, metrics and plots all
+    # use this series.
+    for results, dataset in ((train_results, train_ds), (val_results, val_ds)):
+        if results is None:
+            continue
+        steps = min(dataset.stride, args.output_window_size)
+        for key in ('predictions', 'targets'):
+            kept = results[key][:, :, :steps, :]                                    # [n_windows, N_pts, steps, C]
+            n_pts, n_cols = kept.shape[1], kept.shape[3]
+            results[key] = np.ascontiguousarray(kept.transpose(0, 2, 1, 3)).reshape(-1, n_pts, 1, n_cols)
+        results['coords'] = np.repeat(results['coords'], steps, axis=0)           # one entry per time step
+        if dataset is val_ds:
+            args.saved_steps_per_window = steps                                     # recorded in metadata.json
+    n_saved_steps = 1
+
     if train_results is not None:
         print(f"Reshaped train predictions to: {train_results['predictions'].shape}")
         print(f"Reshaped train targets to:     {train_results['targets'].shape}")
@@ -350,7 +367,7 @@ def main():
             results_dict, 
             args.target_cols, 
             args.target_col_indices,
-            args.output_window_size,
+            n_saved_steps,
             args.results_dir,
             create_3d_plots=args.create_3d_plots,
             coord_transform=coord_transform

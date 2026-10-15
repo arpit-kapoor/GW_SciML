@@ -1,16 +1,16 @@
 #!/bin/bash
-#PBS -P no50
-#PBS -l walltime=24:00:00
-#PBS -q gpuvolta
-#PBS -l ncpus=24
-#PBS -l ngpus=2
-#PBS -l mem=191GB
-#PBS -l wd
-#PBS -l storage=scratch/yl75+gdata/yl75
-#PBS -N train_gino
-#PBS -j oe
+#PBS -N GINO_Train
+#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1:gpu_model=V100
+#PBS -l walltime=12:00:00
+#PBS -o /dev/null
+#PBS -e /dev/null
+#PBS -m abe
 
 cd $PBS_O_WORKDIR
+
+# NumPy madvises huge pages for large arrays; on fragmented nodes every page fault then stalls on
+# memory compaction and large allocations crawl, so turn it off
+export NUMPY_MADVISE_HUGEPAGE=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HPC_DIR="${PBS_O_WORKDIR:-$SCRIPT_DIR}"

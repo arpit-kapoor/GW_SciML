@@ -331,8 +331,9 @@ if __name__ == "__main__":
                     all_preds[patch_id] = []
                     all_targets[patch_id] = []
 
-                all_preds[patch_id].append(core_outputs.cpu().numpy())
-                all_targets[patch_id].append(core_targets.cpu().numpy())
+                # Keep only the first output step: outputs are laid out [t0_c0, t0_c1, t1_c0, ...]
+                all_preds[patch_id].append(core_outputs[..., :args.n_target_cols].cpu().numpy())
+                all_targets[patch_id].append(core_targets[..., :args.n_target_cols].cpu().numpy())
 
                 prev_nodes = num_nodes
             
@@ -347,10 +348,10 @@ if __name__ == "__main__":
         return all_preds_array, all_targets_array
 
 
-    # Compute mean and std for inverse normalization
-    # Outputs are laid out as [t0_c0, t0_c1, t1_c0, ...], so repeat the per-column stats for each output step
-    obs_mean = np.tile(obs_transform.mean[args.target_col_indices].cpu().numpy(), args.output_window_size)
-    obs_std = np.tile(obs_transform.std[args.target_col_indices].cpu().numpy(), args.output_window_size)
+    # Compute mean and std for inverse normalization (one entry per target column, since only the
+    # first output step is kept)
+    obs_mean = obs_transform.mean[args.target_col_indices].cpu().numpy()
+    obs_std = obs_transform.std[args.target_col_indices].cpu().numpy()
     print(f"Applying inverse normalization to predictions and targets using mean: {obs_mean}, std: {obs_std}")
     
     print("Processing Validation Set...")

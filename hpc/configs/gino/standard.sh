@@ -4,14 +4,12 @@ TRAIN_ARGS="
 --base-data-dir ${BASE_DATA_DIR}
 --patch-data-subdir patch_all_ts
 --target-cols mass_concentration head
---epochs 100
+--epochs 500
 --batch-size 256
 --input-window-size 5
 --output-window-size 5
 --learning-rate 1e-3
---scheduler-type exponential
---lr-scheduler-interval 10
---lr-gamma 0.98
+--scheduler-type cosine
 --grad-clip-norm 1.0
 --save-checkpoint-every 10
 --lambda-conc-focus 0.0
@@ -19,7 +17,7 @@ TRAIN_ARGS="
 --resolution-ratio 0.3
 --forcings-required
 --device auto
---gno-radius 0.21
+--gno-radius 0.24
 "
 
 PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
@@ -27,8 +25,8 @@ PRED_ARGS="--base-data-dir ${BASE_DATA_DIR}
 --batch-size 128
 --device auto
 --sampling-strategy static
---gno-radius 0.21
 --rolling-sequence
+--val-stride 5
 --val-only
 "
 

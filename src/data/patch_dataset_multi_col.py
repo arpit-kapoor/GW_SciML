@@ -162,6 +162,7 @@ class GWPatchDatasetMultiCol(Dataset):
                     'patch_id': patch['patch_id'],
                     'core_coords': patch['core_coords'],
                     'ghost_coords': patch['ghost_coords'],
+                    'latent_bbox': patch['latent_bbox'],  # [2, coord_dim], full-resolution bounding box
                     'weights': patch['weights'],  # [n_core_points]
                 })
                 
@@ -384,7 +385,12 @@ class GWPatchDatasetMultiCol(Dataset):
 
             # Extract patch_id from directory name
             patch_id = int(patch_dir.split('_')[-1])
-            
+
+            # Latent-grid bounding box from the full-resolution point cloud (core + ghost), taken before
+            # subsampling so the latent grid does not move when the resolution ratio changes
+            full_coords = np.concatenate([core_coords, ghost_coords], axis=0)
+            latent_bbox = np.stack([full_coords.min(axis=0), full_coords.max(axis=0)])  # [2, coord_dim]
+
             # Apply resolution subsampling using the DYNAMIC patch ratio
             n_core_points = core_coords.shape[0]
             n_ghost_points = ghost_coords.shape[0]
@@ -459,6 +465,9 @@ class GWPatchDatasetMultiCol(Dataset):
             if self.coord_transform is not None:
                 core_coords = self.coord_transform(core_coords)
                 ghost_coords = self.coord_transform(ghost_coords)
+                # Per-axis affine with positive scale, so the transformed corners are still the min and max
+                latent_bbox = self.coord_transform(latent_bbox)
+            latent_bbox = torch.as_tensor(latent_bbox)
             if self.obs_transform is not None:
                 core_obs = self.obs_transform(core_obs)
                 ghost_obs = self.obs_transform(ghost_obs)
@@ -485,6 +494,7 @@ class GWPatchDatasetMultiCol(Dataset):
                 patch_data.append({
                     'patch_id': patch_id,
                     'core_coords': core_coords,
+                    'latent_bbox': latent_bbox,
                     'core_obs': core_obs[:train_idx],
                     'ghost_coords': ghost_coords,
                     'ghost_obs': ghost_obs[:train_idx],
@@ -497,6 +507,7 @@ class GWPatchDatasetMultiCol(Dataset):
                 patch_data.append({
                     'patch_id': patch_id,
                     'core_coords': core_coords,
+                    'latent_bbox': latent_bbox,
                     'core_obs': core_obs[train_idx:],
                     'ghost_coords': ghost_coords,
                     'ghost_obs': ghost_obs[train_idx:],

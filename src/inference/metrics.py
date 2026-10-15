@@ -143,8 +143,9 @@ def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform
     """
     Compute relative L2 error, R² score, and KGE for each target column on train and val sets.
     
-    All metrics are computed on denormalized (original scale) data.
-    
+    All metrics are computed on denormalized (original scale) data. Nodes with non-finite predictions at any
+    step (a blown-up rollout) are logged and excluded; their count is returned with the metrics.
+
     Args:
         results_dict: Dictionary containing train and val predictions and targets
         target_cols: List of target column names
@@ -171,12 +172,25 @@ def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform
             targets = targets_data
         
         metrics[dataset_name] = {}
-        
+
+        # Nodes whose predictions became non-finite at any time step (a blown-up rollout) are counted, logged
+        # and excluded, so the metrics describe the remaining nodes instead of failing on NaN
+        node_counts = _report_blown_up_nodes(predictions, dataset_name)
+        node_ok = node_counts.pop('_mask')
+        predictions = predictions[:, node_ok]
+        targets = targets[:, node_ok]
+
         # Compute metrics for each target column
         for col_idx, col_name in enumerate(target_cols):
-            print(f"Computing metrics for {col_name} ({dataset_name})...")
+            print(f"Computing metrics for {col_name} ({dataset_name}) on {node_counts['n_nodes_evaluated']} nodes...")
             col_predictions = predictions[:, :, :, col_idx]  # [N_samples, N_points, output_window_size]
             col_targets = targets[:, :, :, col_idx]
+            if col_predictions.size == 0:
+                metrics[dataset_name][col_name] = dict.fromkeys(
+                    ['nmae', 'rel_l2_error', 'r2', 'kge', 'kge_r', 'kge_alpha', 'kge_beta'], np.nan)
+                metrics[dataset_name][col_name].update(node_counts)
+                continue
+            _report_diverging_nodes(col_predictions, col_targets, col_name, dataset_name)
             
             # Flatten for metric computation
             col_predictions_flat = col_predictions.flatten()
@@ -205,10 +219,53 @@ def compute_metrics(results_dict, target_cols, target_col_indices, obs_transform
                 'kge': kge_results['kge'],
                 'kge_r': kge_results['r'],
                 'kge_alpha': kge_results['alpha'],
-                'kge_beta': kge_results['beta']
+                'kge_beta': kge_results['beta'],
+                **node_counts,
             }
-    
+
     return metrics
+
+
+def _report_blown_up_nodes(predictions, dataset_name):
+    """
+    Count and log the nodes whose predictions are non-finite at any time step.
+
+    Args:
+        predictions: Array of shape [N_samples, N_points, output_window_size, n_target_cols]
+        dataset_name: Name used in the log message
+
+    Returns:
+        dict: node counts, plus '_mask' (boolean [N_points], True for nodes kept in the metrics)
+    """
+    finite_per_step = np.isfinite(predictions).all(axis=(2, 3))   # [N_samples, N_points]
+    node_ok = finite_per_step.all(axis=0)
+    n_nodes = int(node_ok.size)
+    n_bad = n_nodes - int(node_ok.sum())
+    if n_bad:
+        # first sample (time step) at which each blown-up node became non-finite, 1-based
+        first_bad = np.argmax(~finite_per_step[:, ~node_ok], axis=0) + 1
+        print(f"[{dataset_name}] BLOWN-UP NODES: {n_bad} of {n_nodes} nodes ({100 * n_bad / n_nodes:.2f}%) have "
+              f"non-finite predictions; first non-finite at step {int(first_bad.min())} "
+              f"(median {int(np.median(first_bad))}, last {int(first_bad.max())}) of {predictions.shape[0]}. "
+              f"These nodes are excluded from the metrics.")
+    else:
+        print(f"[{dataset_name}] All {n_nodes} nodes have finite predictions at every step.")
+    return {'n_nodes_evaluated': n_nodes - n_bad, 'n_nodes_nonfinite': n_bad,
+            'pct_nodes_nonfinite': 100.0 * n_bad / n_nodes, '_mask': node_ok}
+
+
+def _report_diverging_nodes(col_predictions, col_targets, col_name, dataset_name, factor=10.0):
+    """
+    Log finite nodes whose predictions leave the target range by more than `factor` times its width at some
+    step: they are still included in the metrics but usually dominate them.
+    """
+    t_min, t_max = np.nanmin(col_targets), np.nanmax(col_targets)
+    width = max(t_max - t_min, 1e-12)
+    outside = ((col_predictions < t_min - factor * width) | (col_predictions > t_max + factor * width))
+    n_div = int(outside.reshape(outside.shape[0], outside.shape[1], -1).any(axis=(0, 2)).sum())
+    if n_div:
+        print(f"[{dataset_name}] {col_name}: {n_div} of {col_predictions.shape[1]} remaining nodes have finite "
+              f"predictions more than {factor:g}x the target range outside it at some step (still included).")
 
 
 def save_metrics(metrics, target_cols, results_dir):
@@ -229,7 +286,8 @@ def save_metrics(metrics, target_cols, results_dir):
     rows = []
     
     # Metrics to extract (in desired order)
-    metric_names = ['nmae', 'rel_l2_error', 'r2', 'kge', 'kge_r', 'kge_alpha', 'kge_beta']
+    metric_names = ['nmae', 'rel_l2_error', 'r2', 'kge', 'kge_r', 'kge_alpha', 'kge_beta',
+                    'n_nodes_evaluated', 'n_nodes_nonfinite', 'pct_nodes_nonfinite']
     
     for metric_name in metric_names:
         for col_name in target_cols:

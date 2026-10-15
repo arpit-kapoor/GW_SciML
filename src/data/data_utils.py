@@ -188,13 +188,29 @@ def _flatten_time(seq):
     return seq.reshape(seq.shape[0], seq.shape[1] * seq.shape[2])
 
 
+def _latent_grid_bounds(sample, point_coords):
+    """
+    Bounds of the latent query grid for a patch.
+
+    Uses the full-resolution bounding box stored by the dataset (`latent_bbox`) so that the grid is the
+    same at every resolution ratio; falls back to the bounding box of the given points for datasets
+    that do not provide one.
+    """
+    bbox = sample.get('latent_bbox')
+    if bbox is None:
+        return torch.min(point_coords, dim=0).values, torch.max(point_coords, dim=0).values
+    bbox = torch.as_tensor(bbox, dtype=point_coords.dtype)
+    return bbox[0], bbox[1]
+
+
 def make_collate_fn(args, coord_dim=3):
     """
     Create a collate function that batches samples from the same patch.
 
     The sampler ensures a batch contains indices from a single `patch_id`.
-    We build one point cloud per batch (core+ghost), a latent grid over its
-    bounding box, and then stack input/output sequences along the batch dim.
+    We build one point cloud per batch (core+ghost), a latent grid over the
+    patch's full-resolution bounding box (see `_latent_grid_bounds`), and then
+    stack input/output sequences along the batch dim.
     Time and variable dimensions are flattened into channels, which is the
     layout used by GINO and the 3D FNOInterpolate. For the space-time
     factorized FNO use `make_spacetime_collate_fn`.
@@ -228,10 +244,9 @@ def make_collate_fn(args, coord_dim=3):
         # Concatenate core and ghost points to form complete spatial domain
         point_coords = torch.concat([core_coords, ghost_coords], dim=0).float()
 
-        # Create latent queries grid over the per-batch bounding box
+        # Create latent queries grid over the patch bounding box
         # This provides a regular grid for the FNO component
-        coords_min = torch.min(point_coords, dim=0).values
-        coords_max = torch.max(point_coords, dim=0).values
+        coords_min, coords_max = _latent_grid_bounds(batch_samples[0], point_coords)
         latent_query_arr = [
             torch.linspace(coords_min[i], coords_max[i], args.latent_query_dims[i], device=args.device)
             for i in range(coord_dim)
@@ -372,8 +387,7 @@ def make_spacetime_collate_fn(args, coord_dim=3):
         output_coords_4d = output_coords_4d.reshape(n_pts * T_out, 4)
 
         # --- Build 4D latent query grid ---
-        coords_min = torch.min(spatial_coords, dim=0).values
-        coords_max = torch.max(spatial_coords, dim=0).values
+        coords_min, coords_max = _latent_grid_bounds(batch_samples[0], spatial_coords)
         latent_query_arr = [
             torch.linspace(coords_min[i], coords_max[i], args.latent_query_dims[i], device=args.device)
             for i in range(coord_dim)

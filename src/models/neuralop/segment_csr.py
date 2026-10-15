@@ -2,7 +2,6 @@ from typing import Literal
 import importlib
 
 import torch
-from torch import einsum
 
 def segment_csr(
     src: torch.Tensor,
@@ -17,11 +16,11 @@ def segment_csr(
     in neuralop.layers.IntegralTransform
 
     If use_scatter is set to False or torch_scatter is not
-    properly built, segment_csr falls back to a naive PyTorch implementation
-
-    Note: the native version is mainly intended for running tests on 
-    CPU-only GitHub CI runners to get around a versioning issue. 
-    torch_scatter should be installed and built if possible. 
+    properly built, segment_csr falls back to a vectorised PyTorch
+    implementation (a single index_add over neighborhood ids). It matches the
+    original per-neighborhood loop up to floating-point summation order; on
+    CUDA it is only bitwise reproducible with
+    ``torch.use_deterministic_algorithms(True)``.
 
     Parameters
     ----------
@@ -35,7 +34,7 @@ def segment_csr(
         reduce by taking the average of all neighbors.
         Otherwise take the sum.
     use_scatter : bool, optional
-        whether to use ``torch-scatter.segment_csr``. If False, uses native Python reduction.
+        whether to use ``torch-scatter.segment_csr``. If False, uses the native PyTorch reduction.
         By default True
 
         .. warning:: 
@@ -62,39 +61,26 @@ def segment_csr(
                   Defaulting to naive PyTorch implementation")
         # if batched, shape [b, n_reps, channels]
         # otherwise shape [n_reps, channels]
-        if src.ndim == 3:
-            batched = True
-            point_dim = 1
-        else:
-            batched = False
-            point_dim = 0
+        batched = src.ndim == 3
+        point_dim = 1 if batched else 0
+        # neighborhoods are the same for every batch element, so the first row of indptr describes them all
+        splits = indptr[0] if batched else indptr
+        n_nbrs = splits[1:] - splits[:-1]
+        n_out = n_nbrs.shape[0]
+
+        # Vectorised reduction: tag every entry of src with the neighborhood it belongs to and
+        # accumulate them in one index_add_, instead of looping over neighborhoods in Python
+        segment_ids = torch.repeat_interleave(torch.arange(n_out, device=src.device), n_nbrs)
 
         # if batched, shape [b, n_out, channels]
         # otherwise shape [n_out, channels]
         output_shape = list(src.shape)
-        n_out = indptr.shape[point_dim] - 1
         output_shape[point_dim] = n_out
+        out = torch.zeros(output_shape, device=src.device, dtype=src.dtype)
+        out = out.index_add(point_dim, segment_ids, src)
 
-        out = torch.zeros(output_shape, device=src.device)
-
-        for i in range(n_out):
-            # reduce all indices pointed to in indptr from src into out
-            if batched:
-                from_idx = (slice(None), slice(indptr[0,i], indptr[0,i+1]))
-                ein_str = 'bio->bo'
-                start = indptr[0,i]
-                n_nbrs = indptr[0,i+1] - start
-                to_idx = (slice(None), i)
-            else:
-                from_idx = slice(indptr[i], indptr[i+1])
-                ein_str = 'io->o'
-                start = indptr[i]
-                n_nbrs = indptr[i+1] - start
-                to_idx = i
-            src_from = src[from_idx]
-            if n_nbrs > 0:
-                to_reduce = einsum(ein_str, src_from)
-                if reduction == "mean":
-                    to_reduce /= n_nbrs
-                out[to_idx] += to_reduce
+        if reduction == "mean":
+            # empty neighborhoods stay zero
+            counts = n_nbrs.clamp(min=1).to(src.dtype)
+            out = out / (counts.view(1, -1, 1) if batched else counts.view(-1, 1))
         return out
