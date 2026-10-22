@@ -1,16 +1,23 @@
 #!/bin/bash
-#PBS -N GINO_Train
-#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1:gpu_model=V100
+#PBS -P yl75
+#PBS -N gino_train
 #PBS -l walltime=12:00:00
-#PBS -o /dev/null
-#PBS -e /dev/null
-#PBS -m abe
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=95GB
+#PBS -l jobfs=20GB
+#PBS -l wd
+#PBS -l storage=scratch/yl75
 
 cd $PBS_O_WORKDIR
 
 # NumPy madvises huge pages for large arrays; on fragmented nodes every page fault then stalls on
 # memory compaction and large allocations crawl, so turn it off
 export NUMPY_MADVISE_HUGEPAGE=0
+# GNO edge tensors change size with each patch's neighbour count, which fragments the CUDA caching
+# allocator (OOMs reported several GiB reserved but unallocated); expandable segments avoid that
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HPC_DIR="${PBS_O_WORKDIR:-$SCRIPT_DIR}"

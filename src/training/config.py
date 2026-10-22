@@ -84,6 +84,10 @@ def setup_training_arguments(
                        help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=32,
                        help='Batch size for training')
+    parser.add_argument('--micro-batch-size', type=int, default=None,
+                       help='Run each training batch in chunks of this many samples and accumulate '
+                            'gradients, so the optimizer still steps once per --batch-size batch with '
+                            'less GPU memory (default: whole batch at once)')
     
     # Shuffling parameters
     parser.add_argument('--shuffle-within-batches', action='store_true', default=True,

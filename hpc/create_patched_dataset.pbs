@@ -4,6 +4,7 @@
 #PBS -l mem=64GB
 #PBS -l walltime=02:00:00
 #PBS -j oe
+#PBS -o /scratch/yl75/ak4177/src/GW_FFNO/logs/create_patched_dataset.log
 
 set -euo pipefail
 

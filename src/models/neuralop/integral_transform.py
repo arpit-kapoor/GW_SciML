@@ -189,9 +189,12 @@ class IntegralTransform(nn.Module):
         if f_y is not None and self.transform_type != "nonlinear_kernelonly":
             # if we have a batch of outputs (3d incl. batch dim) and unbatched inputs,
             # create an identical batch dim in rep_features
+            # Broadcast the batch-independent kernel [E, C] against in_features [B, E, C] instead of
+            # repeating it and multiplying in place: the repeat plus the copy autograd keeps of it for
+            # the in-place mul_ would each be another [B, E, C] tensor
             if rep_features.ndim == 2 and batched:
-                rep_features = rep_features.unsqueeze(0).repeat([batch_size] + [1] * rep_features.ndim)
-            rep_features.mul_(in_features)
+                rep_features = rep_features.unsqueeze(0)
+            rep_features = rep_features * in_features
         
         # Weight neighbors in each neighborhood, first according to the neighbor search (mollified GNO)
         # and second according to individually-provided weights.

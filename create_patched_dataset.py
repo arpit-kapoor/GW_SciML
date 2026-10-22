@@ -34,7 +34,9 @@ from sklearn.cluster import KMeans
 from tqdm import tqdm
 
 
-DEFAULT_BASE_DATA_DIR = "/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density"
+# DEFAULT_BASE_DATA_DIR = "/srv/scratch/z5370003/projects/data/groundwater/FEFLOW/coastal/variable_density"
+
+DEFAULT_BASE_DATA_DIR = "/scratch/yl75/ak4177/data/feflow_data"
 
 TARGET_COLS = ["mass_concentration", "head", "pressure"]
 FORCING_COLS = ["mass_concentration_bc", "head_bc", "recharge_forcing", "sea_level_forcing"]

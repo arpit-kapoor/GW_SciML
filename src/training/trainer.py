@@ -157,35 +157,53 @@ def _train_one_epoch(
     total_samples = 0
     
     for step_idx, batch in enumerate(train_loader, start=1):
-        # Forward pass
-        outputs = forward_fn(model, batch, args)
-        
-        # Extract core points and compute loss
-        core_outputs, core_targets, core_weights = extract_core_fn(outputs, batch, args)
-        loss_result = loss_fn(core_outputs, core_targets, core_weights)
-        
-        # Unpack loss (support different return formats)
-        if isinstance(loss_result, tuple):
-            loss = loss_result[0]
-            loss_components = loss_result[1:] if len(loss_result) > 1 else ()
-        else:
-            loss = loss_result
-            loss_components = ()
-        
-        # Accumulate losses
         batch_size = batch['x'].shape[0]
-        epoch_losses['losses'] += loss.item() * batch_size
-        
-        if len(loss_components) >= 2:
-            epoch_losses['global_losses'] += loss_components[0].item() * batch_size
-            epoch_losses['conc_var_losses'] += loss_components[1].item() * batch_size
-        
-        total_samples += batch_size
-        
-        # Backward pass and optimization
+        micro_batch_size = getattr(args, 'micro_batch_size', None) or batch_size
         optimizer.zero_grad()
-        loss.backward()
-        
+
+        # Run the batch in micro-batches and accumulate gradients, so one optimizer step still sees
+        # the whole batch. The losses are means over the batch, so weighting each micro-batch loss
+        # by its share of the batch gives the full-batch gradient. Only x and y carry a batch dim;
+        # coordinates, latent queries and weights are shared by every sample in the batch.
+        loss = 0.0
+        loss_components = [0.0, 0.0]
+        for start in range(0, batch_size, micro_batch_size):
+            micro_batch = dict(batch)
+            micro_batch['x'] = batch['x'][start:start + micro_batch_size]
+            micro_batch['y'] = batch['y'][start:start + micro_batch_size]
+            share = micro_batch['x'].shape[0] / batch_size
+
+            # Forward pass
+            outputs = forward_fn(model, micro_batch, args)
+
+            # Extract core points and compute loss
+            core_outputs, core_targets, core_weights = extract_core_fn(outputs, micro_batch, args)
+            loss_result = loss_fn(core_outputs, core_targets, core_weights)
+
+            # Unpack loss (support different return formats)
+            if isinstance(loss_result, tuple):
+                micro_loss = loss_result[0]
+                micro_components = loss_result[1:] if len(loss_result) > 1 else ()
+            else:
+                micro_loss = loss_result
+                micro_components = ()
+
+            (micro_loss * share).backward()
+            loss += micro_loss.item() * share
+            if len(micro_components) >= 2:
+                loss_components[0] += micro_components[0].item() * share
+                loss_components[1] += micro_components[1].item() * share
+
+            # Free this micro-batch's activations before the next forward pass
+            del outputs, core_outputs, core_targets, loss_result, micro_loss
+
+        # Accumulate losses
+        epoch_losses['losses'] += loss * batch_size
+        epoch_losses['global_losses'] += loss_components[0] * batch_size
+        epoch_losses['conc_var_losses'] += loss_components[1] * batch_size
+
+        total_samples += batch_size
+
         # Apply gradient clipping if enabled
         if hasattr(args, 'grad_clip_norm') and args.grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
@@ -195,7 +213,7 @@ def _train_one_epoch(
         # Log progress
         if step_idx % max(1, len(train_loader) // 10) == 0:
             print(f"({dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) "
-                  f"Step: {step_idx}/{len(train_loader)} Loss: {loss.item():.4f}")
+                  f"Step: {step_idx}/{len(train_loader)} Loss: {loss:.4f}")
     
     # Calculate average losses
     for key in epoch_losses:

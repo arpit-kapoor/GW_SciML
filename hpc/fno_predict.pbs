@@ -1,5 +1,6 @@
 #!/bin/bash
 #PBS -P yl75
+#PBS -N fno_predict
 #PBS -l storage=scratch/yl75
 #PBS -q gpuvolta
 #PBS -l ncpus=12

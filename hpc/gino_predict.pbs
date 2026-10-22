@@ -1,10 +1,14 @@
 #!/bin/bash
-#PBS -N GINO_Predict
-#PBS -l select=1:ncpus=4:mem=16gb:ngpus=1:gpu_model=A100
-#PBS -l walltime=00:30:00
-#PBS -o /dev/null
-#PBS -e /dev/null
-#PBS -m abe
+#PBS -P yl75
+#PBS -N gino_predict
+#PBS -l walltime=2:00:00
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=95GB
+#PBS -l jobfs=20GB
+#PBS -l wd
+#PBS -l storage=scratch/yl75
 
 # NumPy madvises huge pages for large arrays; on fragmented nodes every page fault then stalls on
 # memory compaction and large allocations crawl, so turn it off

@@ -106,20 +106,20 @@ def define_model_parameters(args):
 
     args.in_gno_channel_mlp_layers = [32, 64, 32]
     args.fno_n_layers = 4
-    args.fno_hidden_channels = 128
+    args.fno_hidden_channels = 64
     args.lifting_channels = 64
     args.out_gno_channel_mlp_layers = [32, 64, 32]
     args.projection_channel_ratio = 2
     if args.space_time:
         # The latent state is extruded over the output window and processed by the
         # factorized space-time FNO; each latent time slice decodes one output step.
-        args.fno_n_modes = (8, 8, 6, 8)
+        args.fno_n_modes = (10, 10, 6, 4)
         args.out_channels = args.n_target_cols
         args.latent_query_dims = (16, 16, 8, args.output_window_size)
     else:
-        args.fno_n_modes = (8, 8, 6)
+        args.fno_n_modes = (10, 10, 8)
         args.out_channels = args.output_window_size * args.n_target_cols
-        args.latent_query_dims = (16, 16, 8)
+        args.latent_query_dims = (24, 24, 12)
     return args
 
 

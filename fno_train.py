@@ -102,12 +102,12 @@ def define_model_parameters(args):
     
     # FNO configuration
     args.fno_n_layers = 4
+    args.fno_hidden_channels = 64
     args.lifting_channels = 64
     args.projection_channel_ratio = 2
 
     if args.space_time:
         args.fno_n_modes = (10, 10, 6, 4)
-        args.fno_hidden_channels = 64
         # 4D space-time FNO packs channels per point-time pair.
         # Base channels: observations at current step
         args.in_channels = args.n_target_cols
@@ -122,8 +122,7 @@ def define_model_parameters(args):
         args.latent_query_dims = (24, 24, 12, args.input_window_size)
     else:
         # 3D FNO configuration (same as GINO): time steps are flattened into channels
-        args.fno_n_modes = (8, 8, 6)
-        args.fno_hidden_channels = 128
+        args.fno_n_modes = (10, 10, 8)
         args.in_channels = args.input_window_size * args.n_target_cols
 
         if getattr(args, 'forcings_required', False):
@@ -132,8 +131,8 @@ def define_model_parameters(args):
             args.in_channels += args.forcings_dim
 
         args.out_channels = args.output_window_size * args.n_target_cols
-        args.latent_query_dims = (16, 16, 8)
-    
+        args.latent_query_dims = (24, 24, 12)
+
     return args
 
 
